@@ -61,10 +61,26 @@ git clone https://github.com/GonduDivitha/intelligence_lab_demo_agent.git
 cd intelligence_lab_demo_agent
 ```
 
-### 2. Set up virtual environment
+### 2. Set up virtual environment & install dependencies
+
+#### 🍎 macOS / Linux
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+#### 🪟 Windows (Command Prompt)
+```cmd
+python -m venv .venv
+.venv\Scripts\activate.bat
+pip install -r requirements.txt
+```
+
+#### 🪟 Windows (PowerShell)
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
@@ -96,4 +112,4 @@ python app.py
 ---
 
 ## 👥 Authors
-* Developed at the **Intelligence Lab**.
+* Developed and maintained by the **Intelligence Lab Engineering Team**.
