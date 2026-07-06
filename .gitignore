@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# User data & temp files
+analytics_data.json
+*.log
+temp/
+tmp/
+.tempmediaStorage/
+
+# MediaPipe HandLandmarker model
+models/hand_landmarker.task

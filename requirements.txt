@@ -1,0 +1,11 @@
+PySide6
+opencv-python
+python-pptx
+pyttsx3
+numpy
+sounddevice
+vosk
+edge-tts
+pygame
+requests
+mediapipe
