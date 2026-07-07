@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 from llm_brain import LLMBrain
 from tts_engine import TTSEngine
 from interrupt_handler import InterruptHandler
-from video_avatar import VideoAvatar
+from enhanced_avatar import EnhancedAvatar
 from language_manager import LanguageManager
 from conversation_engine import ConversationEngine
 from voice_listener import ContinuousVoiceListener
@@ -403,8 +403,8 @@ class MainWindow(QMainWindow):
         center_layout.addWidget(control_deck)
         splitter.addWidget(center)
 
-        # Use VideoAvatar for realistic human AI presenter
-        self.avatar = VideoAvatar()
+        # Use EnhancedAvatar for premium interactive vector presenter
+        self.avatar = EnhancedAvatar()
         splitter.addWidget(self.avatar)
 
         splitter.setSizes([80, 420, 400])
@@ -1011,7 +1011,7 @@ class MainWindow(QMainWindow):
     # ─── Conversation Engine Callbacks ─────────────────────────────────────────
 
     def on_state_changed(self, state: str):
-        self.avatar.set_state(state.lower(), self.conv_engine.current_slide)
+        self.avatar.set_state(state.lower())
         self.set_status(f"Mode: {state}")
         
         # Update Start Presenter button text dynamically based on interrupted state

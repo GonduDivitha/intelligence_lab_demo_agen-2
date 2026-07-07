@@ -650,8 +650,8 @@ class EnhancedAvatar(QWidget):
         painter.translate(cx, cy)
         painter.rotate(self._head_tilt * 0.5)
 
-        hair_color = QColor(35, 30, 80)
-        hair_dark = QColor(25, 20, 55)
+        hair_color = QColor(115, 74, 52)  # Rich brown
+        hair_dark = QColor(80, 48, 32)    # Dark brown shadow
 
         sway = math.sin(self._breathing_phase * 0.7) * 2
 
@@ -704,8 +704,8 @@ class EnhancedAvatar(QWidget):
         painter.translate(cx, cy)
         painter.rotate(self._head_tilt * 0.7)
 
-        hair_color = QColor(35, 30, 80)
-        highlight = QColor(60, 55, 140)
+        hair_color = QColor(115, 74, 52)  # Rich brown
+        highlight = QColor(158, 114, 88)   # Soft warm highlights
         sway = math.sin(self._gesture_phase * 0.8) * 1.5
 
         painter.setPen(Qt.NoPen)
@@ -770,11 +770,11 @@ class EnhancedAvatar(QWidget):
         body_w = 70  # half-width at shoulders
         body_h = 150
 
-        # Lab coat
+        # Navy blue blazer suit
         coat_grad = QLinearGradient(0, body_top, 0, body_top + body_h)
-        coat_grad.setColorAt(0.0, QColor(235, 240, 255))
-        coat_grad.setColorAt(0.5, QColor(225, 230, 248))
-        coat_grad.setColorAt(1.0, QColor(210, 218, 240))
+        coat_grad.setColorAt(0.0, QColor(25, 45, 110))    # Royal Navy Blue
+        coat_grad.setColorAt(0.5, QColor(15, 30, 85))     # Deep Navy Blue
+        coat_grad.setColorAt(1.0, QColor(8, 18, 55))      # Dark Navy shadow
 
         coat = QPainterPath()
         coat.moveTo(-body_w + 5, body_top)
@@ -785,31 +785,51 @@ class EnhancedAvatar(QWidget):
                      body_w - 5, body_top)
         coat.closeSubpath()
 
-        painter.setPen(QPen(QColor(190, 200, 225), 1))
+        painter.setPen(QPen(QColor(10, 25, 75), 1))
         painter.setBrush(QBrush(coat_grad))
         painter.drawPath(coat)
 
-        # Darker shirt underneath at neckline
+        # Gray inner blouse underneath at neckline
         shirt = QPainterPath()
         shirt.moveTo(-22, body_top)
         shirt.lineTo(-15, body_top + 30)
         shirt.quadTo(0, body_top + 35, 15, body_top + 30)
         shirt.lineTo(22, body_top)
         shirt.closeSubpath()
-        painter.setBrush(QColor(60, 65, 100))
+        shirt_grad = QLinearGradient(0, body_top, 0, body_top + 30)
+        shirt_grad.setColorAt(0.0, QColor(210, 212, 222))
+        shirt_grad.setColorAt(1.0, QColor(165, 168, 178))
+        painter.setBrush(QBrush(shirt_grad))
         painter.setPen(Qt.NoPen)
         painter.drawPath(shirt)
 
-        # Collar — V shape
-        painter.setPen(QPen(QColor(200, 210, 235), 1.5))
+        # Silver necklace and pendant
+        necklace = QPainterPath()
+        necklace.moveTo(-10, body_top + 10)
+        necklace.quadTo(0, body_top + 22, 10, body_top + 10)
+        painter.setPen(QPen(QColor(220, 225, 235), 1.2))
         painter.setBrush(Qt.NoBrush)
+        painter.drawPath(necklace)
+        
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(240, 245, 255))
+        painter.drawEllipse(QPointF(0, body_top + 22), 2, 2)
+
+        # Blazer lapels
+        painter.setPen(QPen(QColor(40, 70, 160), 1.8))
+        painter.setBrush(QColor(15, 30, 85))
         collar_l = QPainterPath()
         collar_l.moveTo(-28, body_top - 2)
-        collar_l.quadTo(-18, body_top + 15, -12, body_top + 30)
+        collar_l.lineTo(-12, body_top + 30)
+        collar_l.lineTo(-24, body_top + 30)
+        collar_l.closeSubpath()
         painter.drawPath(collar_l)
+        
         collar_r = QPainterPath()
         collar_r.moveTo(28, body_top - 2)
-        collar_r.quadTo(18, body_top + 15, 12, body_top + 30)
+        collar_r.lineTo(12, body_top + 30)
+        collar_r.lineTo(24, body_top + 30)
+        collar_r.closeSubpath()
         painter.drawPath(collar_r)
 
         # Coat folds / creases
@@ -864,7 +884,7 @@ class EnhancedAvatar(QWidget):
         painter.save()
         painter.translate(cx, cy)
 
-        sleeve_color = QColor(225, 230, 248)
+        sleeve_color = QColor(15, 30, 85)  # Navy blue sleeves to match blazer
         skin_color = QColor(255, 222, 210)
         body_top = 62
 
