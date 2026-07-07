@@ -21,7 +21,7 @@ def create_presenter_gifs():
     output_dir = os.path.join('assets', 'gifs')
     os.makedirs(output_dir, exist_ok=True)
 
-    states = ['idle', 'speaking', 'thinking', 'greeting', 'presenting']
+    states = ['idle', 'speaking', 'thinking', 'greeting', 'greeting_silent', 'presenting', 'presenting_silent']
     fps = 30
     duration = 2.0 # 2 seconds per GIF
     total_frames = int(fps * duration)
@@ -38,13 +38,10 @@ def create_presenter_gifs():
             # Sub-pixel organic breathing (Y bob) and gesturing (X sway)
             bob = math.sin(phase) * 6.0
             
-            if state == 'speaking':
-                sway = math.sin(phase * 2) * 12.0
-                tilt = math.sin(phase) * 1.5
-            elif state == 'presenting':
-                sway = math.sin(phase) * 6.0
-                tilt = math.sin(phase) * 0.8
-            elif state == 'greeting':
+            if state in ['speaking', 'presenting', 'presenting_silent']:
+                sway = math.sin(phase * 2) * 12.0 if 'silent' not in state else math.sin(phase) * 6.0
+                tilt = math.sin(phase) * 1.5 if 'silent' not in state else math.sin(phase) * 0.8
+            elif state in ['greeting', 'greeting_silent']:
                 sway = math.sin(phase) * 10.0
                 tilt = math.cos(phase) * 2.0
             elif state == 'thinking':
@@ -81,6 +78,16 @@ def create_presenter_gifs():
             f_right_eye = transform_point(right_eye_x, eye_y, M)
             f_mouth = transform_point(mouth_x, mouth_y, M)
 
+            # Draw blinking eyes (blink every 60 frames for 3 frames)
+            is_blinking = (frame_idx % 60) in [25, 26, 27]
+            if is_blinking:
+                # Eyelid cover matching her skin tone
+                cv2.ellipse(frame, f_left_eye, (12, 5), 0, 0, 360, (190, 203, 248), -1)
+                cv2.ellipse(frame, f_right_eye, (12, 5), 0, 0, 360, (190, 203, 248), -1)
+                # Eyelash line
+                cv2.line(frame, (f_left_eye[0] - 13, f_left_eye[1]), (f_left_eye[0] + 13, f_left_eye[1]), (20, 25, 36), 2)
+                cv2.line(frame, (f_right_eye[0] - 13, f_right_eye[1]), (f_right_eye[0] + 13, f_right_eye[1]), (20, 25, 36), 2)
+
             # Apply photo-realistic lip sync warp (vertical stretching/compression of her actual lips)
             if state in ['speaking', 'greeting', 'presenting']:
                 mouth_phase = (frame_idx / 10.0) * math.pi * 2
@@ -113,8 +120,8 @@ def create_presenter_gifs():
                         roi_bot = frame[y_end-3:y_end+3, x1:x2]
                         frame[y_end-3:y_end+3, x1:x2] = cv2.GaussianBlur(roi_bot, (3, 3), 0)
 
-            # Apply pointing gesture overlay during presenting state
-            if state == 'presenting':
+            # Apply pointing gesture overlay during presenting states
+            if state in ['presenting', 'presenting_silent']:
                 # Animate pointing arm slightly with breathing phase
                 hand_x = 90 + int(math.sin(phase) * 5)
                 hand_y = 260 + int(math.cos(phase) * 3)
@@ -155,11 +162,16 @@ def create_presenter_gifs():
             print(f"Generated: {state}.gif")
 
     # Generate slide gifs
+    import shutil
     for i in range(5):
         slide_gif_path = os.path.join(output_dir, f"slide{i}.gif")
-        import shutil
+        slide_silent_gif_path = os.path.join(output_dir, f"slide{i}_silent.gif")
         shutil.copy2(os.path.join(output_dir, "presenting.gif"), slide_gif_path)
-        print(f"Linked slide{i}.gif")
+        shutil.copy2(os.path.join(output_dir, "presenting_silent.gif"), slide_silent_gif_path)
+        print(f"Linked slide{i}.gif and slide{i}_silent.gif")
 
 if __name__ == '__main__':
     create_presenter_gifs()
+
+
+

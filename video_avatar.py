@@ -32,6 +32,9 @@ class VideoAvatar(QWidget):
         self.fallback_image_path = os.path.join(os.path.dirname(__file__), "presenter_base.jpg")
         
         self.current_gif_path = ""
+        self.current_state = "idle"
+        self.current_slide = 0
+        self.is_speaking = False
         self.init_avatar()
 
     def init_avatar(self):
@@ -64,33 +67,38 @@ class VideoAvatar(QWidget):
         self.set_state("greeting")
 
     def set_speaking(self, is_speaking: bool):
-        if self.movie:
-            # Pause the animated movie loop when not speaking to stop lip sync/mouth movements instantly
-            self.movie.setPaused(not is_speaking)
+        self.is_speaking = is_speaking
+        self._update_avatar_gif()
 
     def set_visitor_position(self, rel_x: float, rel_y: float):
         pass # Gaze tracking is pre-rendered in high-fidelity GIF loop
 
     def set_state(self, state: str, slide_index: int = 0):
-        """
-        Dynamically transitions the presenter loop based on the agent state.
-        Switches animated GIF loops seamlessly.
-        """
-        state = state.lower()
+        self.current_state = state.lower()
+        self.current_slide = slide_index
+        self._update_avatar_gif()
+
+    def _update_avatar_gif(self):
+        state = self.current_state
         gif_filename = ""
-        
-        if state == "greeting":
-            gif_filename = "greeting.gif"
-        elif state == "farewell":
-            gif_filename = "farewell.gif"
-        elif state in ["presenting", "speaking", "answering"]:
-            gif_filename = f"slide{slide_index}.gif"
-            if not os.path.exists(os.path.join(self.assets_dir, gif_filename)):
-                gif_filename = "speaking.gif"
-        elif state == "listening":
-            gif_filename = "listening.gif"
+
+        # Map state & speaking flags to correct GIF files
+        if state in ["presenting", "speaking", "answering"]:
+            if self.is_speaking:
+                gif_filename = f"slide{self.current_slide}.gif"
+            else:
+                gif_filename = f"slide{self.current_slide}_silent.gif"
+        elif state == "greeting":
+            if self.is_speaking:
+                gif_filename = "greeting.gif"
+            else:
+                gif_filename = "greeting_silent.gif"
         elif state == "thinking":
             gif_filename = "thinking.gif"
+        elif state == "listening":
+            gif_filename = "listening.gif"
+            if not os.path.exists(os.path.join(self.assets_dir, gif_filename)):
+                gif_filename = "idle.gif"
         else:
             gif_filename = "idle.gif"
 
