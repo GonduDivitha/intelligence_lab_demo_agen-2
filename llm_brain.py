@@ -182,6 +182,40 @@ class LLMBrain:
         else:
             return "Hello and welcome to the Intelligence Lab! I am Aiko, your AI presenter. Which language would you prefer for the presentation — English, Hindi, Telugu, or Tamil?"
 
+    def _keyless_translate(self, text: str, target_lang: str) -> str:
+        if not text or not text.strip():
+            return text
+        try:
+            import urllib.request
+            import urllib.parse
+            import json
+            
+            lang_map = {
+                'english': 'en',
+                'hindi': 'hi',
+                'telugu': 'te',
+                'tamil': 'ta',
+                'kannada': 'kn',
+                'malayalam': 'ml',
+            }
+            lang_code = lang_map.get(target_lang.lower(), 'en')
+            if lang_code == 'en':
+                return text
+                
+            q = urllib.parse.quote(text)
+            url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={lang_code}&dt=t&q={q}"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                translated_parts = []
+                for part in data[0]:
+                    if part[0]:
+                        translated_parts.append(part[0])
+                return "".join(translated_parts)
+        except Exception as e:
+            logger.warning(f"Keyless translation failed: {e}")
+            return ""
+
     def translate_slide(self, slide_title: str, slide_text: str, target_lang: str) -> tuple[str, str]:
         # If target language is English, return as-is
         if target_lang.lower() == "english":
@@ -195,6 +229,12 @@ class LLMBrain:
                 return result[0], result[1]
         except Exception as e:
             logger.warning(f"Error loading default translation: {e}")
+
+        # Try keyless Google Translate API first as a robust, instant translator for dynamic decks
+        trans_title = self._keyless_translate(slide_title, target_lang)
+        trans_text = self._keyless_translate(slide_text, target_lang)
+        if trans_title or trans_text:
+            return trans_title or slide_title, trans_text or slide_text
 
         # Fallback to LLM translation
         if self.gemini_key or self.openai_key or self.is_available():
