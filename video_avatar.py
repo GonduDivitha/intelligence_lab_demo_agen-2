@@ -2,7 +2,7 @@ import os
 import math
 import random
 import logging
-from PySide6.QtCore import Qt, QUrl, QSize, QPointF, QRectF, QTimer
+from PySide6.QtCore import Qt, QUrl, QSize, QPointF, QRectF, QRect, QTimer
 from PySide6.QtWidgets import QWidget, QStackedLayout, QLabel
 from PySide6.QtGui import QPixmap, QMovie, QFont, QColor, QPainter, QPainterPath, QLinearGradient, QRadialGradient, QPen, QBrush
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -13,9 +13,10 @@ logger = logging.getLogger(__name__)
 class RealisticHumanAvatar(QWidget):
     """
     Ultra-premium 2D Digital Human Presenter.
-    Renders a realistic human female avatar with 3D gradient shading,
-    flowing physical hair sways, natural eye blinks, detailed mouth/teeth sync,
-    and smooth arm gestures (pointing, waving, thinking) at 60 FPS.
+    Uses photorealistic textures cropped directly from 'presenter_base.jpg'
+    and animates them using advanced 3D-like multi-layered parallax,
+    producing realistic eye blinks, organic lip-split mouth sync (lips, teeth, tongue),
+    and fluid hand gestures at 60 FPS.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -39,15 +40,59 @@ class RealisticHumanAvatar(QWidget):
         self.mouth_open_factor = 0.0
         self.mouth_phase = 0.0
         
-        # Hand & Head target alignment
-        self.head_tilt_target = 0.0
-        self.head_y_target = 155.0
-        self.head_y_current = 155.0
+        # Image Assets and Texture Coordinates
+        self.base_image_path = os.path.join(os.path.dirname(__file__), "presenter_base.jpg")
+        self.is_loaded = False
+        
+        self.torso_pixmap = None
+        self.head_pixmap = None
+        self.l_eye_pixmap = None
+        self.r_eye_pixmap = None
+        self.mouth_pixmap = None
+        self.sleeve_brush = None
+        
+        # Skin Tone matching the presenter's face
+        self.skin_color = QColor(254, 222, 210)
         
         # Timer for 60 FPS physics loops
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_physics)
         self.timer.start(16)  # ~60 FPS
+        
+        self.load_textures()
+
+    def load_textures(self):
+        if not os.path.exists(self.base_image_path):
+            logger.warning(f"Base image not found at {self.base_image_path}")
+            return
+            
+        try:
+            base = QPixmap(self.base_image_path)
+            if base.isNull():
+                return
+                
+            # Base Image Size is 896x1200
+            # 1. Crop Torso (shoulders, blazer)
+            self.torso_pixmap = base.copy(QRect(120, 500, 656, 700))
+            
+            # 2. Crop Head (face, hair, ears)
+            self.head_pixmap = base.copy(QRect(248, 120, 400, 420))
+            
+            # 3. Crop Eyes for details
+            self.l_eye_pixmap = base.copy(QRect(378, 260, 40, 30))
+            self.r_eye_pixmap = base.copy(QRect(478, 260, 40, 30))
+            
+            # 4. Crop Mouth for lip-split animation
+            self.mouth_pixmap = base.copy(QRect(418, 370, 60, 38))
+            
+            # 5. Crop Sleeve Texture from Blazer for arms matching
+            sleeve_patch = base.copy(QRect(200, 620, 60, 60))
+            self.sleeve_brush = QBrush(sleeve_patch)
+            
+            self.is_loaded = True
+            logger.info("Photorealistic digital human textures successfully loaded.")
+        except Exception as e:
+            logger.error(f"Failed to load photorealistic textures: {e}")
 
     def set_speaking(self, is_speaking: bool):
         self.is_speaking = is_speaking
@@ -70,11 +115,11 @@ class RealisticHumanAvatar(QWidget):
             
         # 3. Head Tilt and bob coordinates based on states
         if self.state == "thinking":
-            self.head_tilt_target = 4.5
+            self.head_tilt_target = 4.0
         elif self.state == "listening":
-            self.head_tilt_target = -3.0 + math.sin(self._nod_phase) * 2.0
+            self.head_tilt_target = -2.5 + math.sin(self._nod_phase) * 1.5
         elif self.state == "greeting":
-            self.head_tilt_target = -2.0
+            self.head_tilt_target = -1.5
         else:
             self.head_tilt_target = 0.0
             
@@ -83,8 +128,7 @@ class RealisticHumanAvatar(QWidget):
         # 4. Blink cycle logic
         self.blink_timer += 1
         if self.blink_frame == 0:
-            # Trigger a blink randomly every 90-180 ticks
-            if self.blink_timer > random.randint(90, 180):
+            if self.blink_timer > random.randint(100, 200):
                 self.blink_frame = 1
                 self.blink_timer = 0
         elif self.blink_frame == 1:  # closing
@@ -96,8 +140,8 @@ class RealisticHumanAvatar(QWidget):
             
         # 5. Lip Sync Mouth opening sizes
         if self.is_speaking:
-            self.mouth_phase += 0.25
-            self.mouth_open_factor = 0.4 + 0.6 * math.sin(self.mouth_phase)
+            self.mouth_phase += 0.28
+            self.mouth_open_factor = 0.3 + 0.7 * math.sin(self.mouth_phase)
         else:
             self.mouth_open_factor += (0.0 - self.mouth_open_factor) * 0.15
             
@@ -114,29 +158,31 @@ class RealisticHumanAvatar(QWidget):
         # Background Space Glow
         self._draw_background(painter, rect)
         
+        if not self.is_loaded:
+            # Fallback standby text
+            painter.setPen(QColor(180, 190, 220))
+            painter.setFont(QFont("Segoe UI", 11))
+            painter.drawText(rect, Qt.AlignCenter, "Loading Digital Human Presenter...")
+            return
+            
         # Setup breathing offset
         breath_y = math.sin(self._breathing_phase) * 2.5
-        cy = self.head_y_current + breath_y
         
         # Scale/Center agent inside container dynamically
         painter.save()
         scale = min(rect.width() / 360.0, rect.height() / 480.0) * 0.95
         scale = max(0.6, min(1.2, scale))
         dx = cx - (180 * scale)
-        dy = (rect.height() - (480 * scale)) / 2
+        dy = (rect.height() - (480 * scale)) / 2 + 10
         painter.translate(dx, dy)
         painter.scale(scale, scale)
         
-        # Draw Character Layers
-        self._draw_hair_back(painter)
-        self._draw_body(painter, breath_y)
-        self._draw_neck(painter)
-        self._draw_head(painter)
-        self._draw_eyes(painter)
-        self._draw_nose(painter)
-        self._draw_mouth(painter)
-        self._draw_hair_front(painter)
-        self._draw_arms(painter, breath_y)
+        # Draw Character Layers using realistic textures
+        self._draw_torso_layer(painter, breath_y)
+        self._draw_head_layer(painter)
+        self._draw_eyes_layer(painter)
+        self._draw_mouth_layer(painter)
+        self._draw_arms_layer(painter, breath_y)
         
         painter.restore()
 
@@ -152,428 +198,141 @@ class RealisticHumanAvatar(QWidget):
         glow.setColorAt(1.0, QColor(0, 0, 0, 0))
         painter.fillRect(rect, QBrush(glow))
 
-    def _draw_hair_back(self, painter):
+    def _draw_torso_layer(self, painter, breath_y):
         painter.save()
-        painter.translate(180, 155)
-        painter.rotate(self._head_tilt * 0.5)
+        # Position torso at bottom, apply breathing bob
+        painter.translate(180, 260 + breath_y * 0.6)
         
-        # Back hair silhouette with rich brown gradient shading
-        hair_grad = QLinearGradient(0, -60, 0, 180)
-        hair_grad.setColorAt(0.0, QColor(95, 60, 42))    # warm brown
-        hair_grad.setColorAt(0.5, QColor(70, 42, 28))    # dark brown
-        hair_grad.setColorAt(1.0, QColor(48, 28, 18))    # deep shadow
-        
-        path = QPainterPath()
-        path.moveTo(-65, -30)
-        path.cubicTo(-95, 20, -75, 160, -50, 200)
-        path.lineTo(50, 200)
-        path.cubicTo(75, 160, 95, 20, 65, -30)
-        path.closeSubpath()
-        
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(hair_grad))
-        painter.drawPath(path)
-        painter.restore()
-
-    def _draw_body(self, painter, breath_y):
-        painter.save()
-        painter.translate(180, 155)
-        
-        body_top = 62 + breath_y * 0.7
-        
-        # 1. Navy Blue Blazer Torso Layer
-        blazer_grad = QLinearGradient(-90, body_top, 90, body_top + 180)
-        blazer_grad.setColorAt(0.0, QColor(25, 45, 110))
-        blazer_grad.setColorAt(0.5, QColor(15, 30, 85))
-        blazer_grad.setColorAt(1.0, QColor(8, 18, 55))
-        
-        torso = QPainterPath()
-        torso.moveTo(-75, body_top + 10)
-        torso.cubicTo(-95, body_top + 30, -90, body_top + 180, -70, body_top + 180)
-        torso.lineTo(70, body_top + 180)
-        torso.cubicTo(90, body_top + 180, 95, body_top + 30, 75, body_top + 10)
-        torso.closeSubpath()
-        
-        painter.setPen(QPen(QColor(10, 20, 65), 1.2))
-        painter.setBrush(QBrush(blazer_grad))
-        painter.drawPath(torso)
-        
-        # 2. Gray Blouse layer underneath
-        blouse_grad = QLinearGradient(0, body_top, 0, body_top + 45)
-        blouse_grad.setColorAt(0.0, QColor(215, 218, 228))
-        blouse_grad.setColorAt(1.0, QColor(170, 172, 182))
-        
-        blouse = QPainterPath()
-        blouse.moveTo(-25, body_top)
-        blouse.lineTo(-18, body_top + 32)
-        blouse.quadTo(0, body_top + 38, 18, body_top + 32)
-        blouse.lineTo(25, body_top)
-        blouse.closeSubpath()
-        
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(blouse_grad))
-        painter.drawPath(blouse)
-        
-        # Creases on gray blouse
-        painter.setPen(QPen(QColor(140, 142, 152, 90), 1))
-        painter.drawLine(0, int(body_top + 15), 0, int(body_top + 32))
-        
-        # 3. Silver Necklace and pendant
-        necklace = QPainterPath()
-        necklace.moveTo(-12, body_top + 10)
-        necklace.quadTo(0, body_top + 22, 12, body_top + 10)
-        painter.setPen(QPen(QColor(225, 228, 238), 1.2))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawPath(necklace)
-        
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(245, 248, 255))
-        painter.drawEllipse(QPointF(0, body_top + 22), 2.2, 2.2)
-        
-        # 4. Blazer Lapels (Left and Right)
-        lapel_l = QPainterPath()
-        lapel_l.moveTo(-32, body_top - 2)
-        lapel_l.lineTo(-14, body_top + 32)
-        lapel_l.lineTo(-28, body_top + 32)
-        lapel_l.closeSubpath()
-        
-        lapel_r = QPainterPath()
-        lapel_r.moveTo(32, body_top - 2)
-        lapel_r.lineTo(14, body_top + 32)
-        lapel_r.lineTo(28, body_top + 32)
-        lapel_r.closeSubpath()
-        
-        painter.setPen(QPen(QColor(40, 68, 155), 1.8))
-        painter.setBrush(QColor(18, 32, 90))
-        painter.drawPath(lapel_l)
-        painter.drawPath(lapel_r)
-        
-        # 5. ID Badge on chest
-        badge_x, badge_y = -35, body_top + 35
-        painter.setPen(QPen(QColor(140, 150, 180), 1))
-        painter.setBrush(QColor(95, 135, 215, 180))
-        painter.drawRoundedRect(QRectF(badge_x, badge_y, 16, 22), 2, 2)
-        # Badge clip
-        painter.setPen(QPen(QColor(180, 190, 210), 1.5))
-        painter.drawLine(int(badge_x + 8), int(badge_y), int(badge_x + 8), int(badge_y - 6))
+        # Draw cropped torso texture
+        target_rect = QRectF(-140, 0, 280, 260)
+        painter.drawPixmap(target_rect, self.torso_pixmap, QRectF(self.torso_pixmap.rect()))
         
         painter.restore()
 
-    def _draw_neck(self, painter):
+    def _draw_head_layer(self, painter):
         painter.save()
-        painter.translate(180, 155)
-        
-        neck_top = 48
-        neck_bot = 66
-        neck_w = 17
-        
-        # Shaded Skin Neck
-        skin_grad = QLinearGradient(0, neck_top, 0, neck_bot)
-        skin_grad.setColorAt(0.0, QColor(245, 208, 195))  # deep neck shadow
-        skin_grad.setColorAt(1.0, QColor(255, 224, 210))
-        
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(skin_grad))
-        painter.drawRect(QRectF(-neck_w, neck_top, neck_w * 2, neck_bot - neck_top))
-        
-        # Neck shading details
-        painter.setBrush(QColor(230, 190, 178, 90))
-        painter.drawRect(QRectF(-neck_w, neck_top, 5, neck_bot - neck_top))
-        
-        painter.restore()
-
-    def _draw_head(self, painter):
-        painter.save()
-        painter.translate(180, 155)
+        # Head pivot point is located at neck connection
+        painter.translate(180, 250)
         painter.rotate(self._head_tilt)
         
-        # Face shape
-        face = QPainterPath()
-        face.moveTo(-54, -60)
-        face.cubicTo(-62, -30, -58, 25, -45, 54)
-        face.cubicTo(-35, 68, -15, 72, 0, 72)
-        face.cubicTo(15, 72, 35, 68, 45, 54)
-        face.cubicTo(58, 25, 62, -30, 54, -60)
-        face.closeSubpath()
-        
-        # 3D Soft skin shading
-        skin = QRadialGradient(0, -10, 80)
-        skin.setColorAt(0.0, QColor(255, 235, 225))
-        skin.setColorAt(0.6, QColor(255, 222, 210))
-        skin.setColorAt(1.0, QColor(248, 210, 196))
-        
-        painter.setPen(QPen(QColor(232, 185, 170), 1.2))
-        painter.setBrush(QBrush(skin))
-        painter.drawPath(face)
-        
-        # Soft Makeup Blush
-        blush_grad_l = QRadialGradient(-35, 25, 22)
-        blush_grad_l.setColorAt(0.0, QColor(255, 170, 170, 110))
-        blush_grad_l.setColorAt(1.0, QColor(255, 255, 255, 0))
-        
-        blush_grad_r = QRadialGradient(35, 25, 22)
-        blush_grad_r.setColorAt(0.0, QColor(255, 170, 170, 110))
-        blush_grad_r.setColorAt(1.0, QColor(255, 255, 255, 0))
-        
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(blush_grad_l))
-        painter.drawEllipse(QPointF(-35, 25), 22, 14)
-        
-        painter.setBrush(QBrush(blush_grad_r))
-        painter.drawEllipse(QPointF(35, 25), 22, 14)
+        # Draw cropped head texture
+        target_rect = QRectF(-85, -195, 170, 210)
+        painter.drawPixmap(target_rect, self.head_pixmap, QRectF(self.head_pixmap.rect()))
         
         painter.restore()
 
-    def _draw_eyes(self, painter):
+    def _draw_eyes_layer(self, painter):
+        # We overlay eye blinking states exactly on top of her pupils
+        # Left eye: center at 398, 280 (relative to head center)
+        # Head crop starts at X=248, Y=120
+        # Local eye coordinates inside target_rect:
+        # Left eye: X = 398 - 248 = 150 -> Relative to pivot (180): -30. Eye Y: 280 - 120 = 160 -> Relative to pivot (250): -90
+        # Right eye: X = 498 - 248 = 250 -> Relative to pivot (180): +70. Eye Y: 280 - 120 = 160 -> Relative to pivot (250): -90
+        
         painter.save()
-        painter.translate(180, 155)
+        painter.translate(180, 250)
         painter.rotate(self._head_tilt)
         
-        eye_y = -8
-        eye_spacing = 28
+        eye_y = -90
         
-        def draw_individual_eye(cx):
+        def draw_eye_blink(cx, is_left):
             painter.save()
             painter.translate(cx, eye_y)
             
-            # Eyelash crease line (top border)
-            painter.setPen(QPen(QColor(52, 32, 25), 2.5))
-            painter.setBrush(Qt.NoBrush)
-            top_fold = QPainterPath()
-            top_fold.moveTo(-18, -2)
-            top_fold.quadTo(0, -12, 18, -2)
-            painter.drawPath(top_fold)
-            
-            if self.blink_frame == 0:  # Eye Fully Open
-                # 1. White sclera
-                sclera = QPainterPath()
-                sclera.moveTo(-15, 0)
-                sclera.quadTo(0, -7, 15, 0)
-                sclera.quadTo(0, 7, -15, 0)
-                sclera.closeSubpath()
-                
+            # If blinking, cover original eye texture with skin patch and eyelashes
+            if self.blink_frame > 0:
+                # Skin colored patch
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(255, 255, 255))
-                painter.drawPath(sclera)
+                painter.setBrush(self.skin_color)
+                painter.drawEllipse(QPointF(0, 0), 10, 6)
                 
-                # 2. Rich Hazel Iris
-                iris_grad = QRadialGradient(0, 0, 9)
-                iris_grad.setColorAt(0.0, QColor(50, 120, 200))   # glowing blue/hazel center
-                iris_grad.setColorAt(0.5, QColor(32, 64, 130))
-                iris_grad.setColorAt(1.0, QColor(14, 25, 60))     # dark rim
-                
-                painter.setBrush(QBrush(iris_grad))
-                painter.drawEllipse(QPointF(0, 0), 9.0, 9.5)
-                
-                # 3. Dark Pupil
-                painter.setBrush(QColor(10, 12, 22))
-                painter.drawEllipse(QPointF(0, 0), 4.2, 4.5)
-                
-                # 4. Highlight Sparkles (Primary and Secondary reflections)
-                painter.setBrush(QColor(255, 255, 255))
-                painter.drawEllipse(QPointF(-3.5, -3.5), 2.2, 2.2)
-                painter.drawEllipse(QPointF(3.5, 3.5), 1.2, 1.2)
-                
-            elif self.blink_frame in (1, 3):  # Half Closed
-                sclera = QPainterPath()
-                sclera.moveTo(-15, 0)
-                sclera.quadTo(0, -3, 15, 0)
-                sclera.quadTo(0, 3, -15, 0)
-                sclera.closeSubpath()
-                
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(255, 255, 255))
-                painter.drawPath(sclera)
-                
-                # Hidden Iris
-                painter.setBrush(QColor(32, 64, 130))
-                painter.drawEllipse(QPointF(0, 0), 7.5, 3.5)
-                
-            else:  # 2: Fully Closed (blink)
-                # Drawing skin fold overlay
-                fold = QPainterPath()
-                fold.moveTo(-16, -1)
-                fold.quadTo(0, 3, 16, -1)
-                painter.setPen(QPen(QColor(195, 145, 130), 2.0))
-                painter.setBrush(Qt.NoBrush)
-                painter.drawPath(fold)
-                
-                # Lash line
-                painter.setPen(QPen(QColor(52, 32, 25), 2.5))
-                painter.drawLine(-17, 0, 17, 0)
-                
+                # Eyelash line
+                painter.setPen(QPen(QColor(42, 28, 22), 2.2, Qt.SolidLine, Qt.RoundCap))
+                painter.drawLine(-11, 0, 11, 0)
             painter.restore()
-            
-        draw_individual_eye(-eye_spacing)
-        draw_individual_eye(eye_spacing)
-        
-        # Draw elegant curved eyebrows
-        painter.setPen(QPen(QColor(85, 52, 38), 2.0, Qt.SolidLine, Qt.RoundCap))
-        painter.setBrush(Qt.NoBrush)
-        # Left brow
-        brow_l = QPainterPath()
-        brow_l.moveTo(-40, -18)
-        brow_l.quadTo(-28, -25, -12, -18)
-        painter.drawPath(brow_l)
-        # Right brow
-        brow_r = QPainterPath()
-        brow_r.moveTo(12, -18)
-        brow_r.quadTo(28, -25, 40, -18)
-        painter.drawPath(brow_r)
+
+        draw_eye_blink(-30, True)
+        draw_eye_blink(70, False)
         
         painter.restore()
 
-    def _draw_nose(self, painter):
+    def _draw_mouth_layer(self, painter):
+        # Mouth center in original image: 448, 389
+        # Head crop starts X=248, Y=120
+        # Local mouth coordinates:
+        # X = 448 - 248 = 200 -> Relative to pivot (180): +20
+        # Y = 389 - 120 = 269 -> Relative to pivot (250): +19
+        
         painter.save()
-        painter.translate(180, 155)
+        painter.translate(180, 250)
         painter.rotate(self._head_tilt)
         
-        # Soft nose bridge shadow
-        painter.setPen(QPen(QColor(230, 180, 165), 1.5, Qt.SolidLine, Qt.RoundCap))
-        painter.setBrush(Qt.NoBrush)
+        mx, my = 20, 19
         
-        nose = QPainterPath()
-        nose.moveTo(-2, 10)
-        nose.lineTo(2, 16)
-        nose.lineTo(-2, 20)
-        painter.drawPath(nose)
-        
-        painter.restore()
-
-    def _draw_mouth(self, painter):
-        painter.save()
-        painter.translate(180, 155)
-        painter.rotate(self._head_tilt)
-        
-        mouth_y = 38
-        
-        # Calculate size dynamics
         op = self.mouth_open_factor
-        mw = 25 + op * 4
-        mh = op * 18
+        mw = 22
+        mh = op * 14
         
-        # 1. Oral Cavity (Red Throat gradient inside)
-        if mh > 2:
-            cavity_grad = QRadialGradient(0, mouth_y, mw / 2)
-            cavity_grad.setColorAt(0.0, QColor(140, 25, 40))   # deep red throat
-            cavity_grad.setColorAt(0.8, QColor(80, 10, 22))    # dark rim
+        if mh > 1.5:
+            # 1. Oral Cavity (Red Throat interior)
+            cavity_grad = QRadialGradient(mx, my, mw / 2)
+            cavity_grad.setColorAt(0.0, QColor(140, 25, 40))   # throat
+            cavity_grad.setColorAt(0.8, QColor(80, 10, 22))    # dark cavity
             
             cavity = QPainterPath()
-            cavity.moveTo(-mw / 2, mouth_y)
-            cavity.cubicTo(-mw / 2, mouth_y - mh / 2, mw / 2, mouth_y - mh / 2, mw / 2, mouth_y)
-            cavity.cubicTo(mw / 2, mouth_y + mh / 2, -mw / 2, mouth_y + mh / 2, -mw / 2, mouth_y)
+            cavity.moveTo(mx - mw / 2, my)
+            cavity.cubicTo(mx - mw / 2, my - mh / 2, mx + mw / 2, my - mh / 2, mx + mw / 2, my)
+            cavity.cubicTo(mx + mw / 2, my + mh / 2, mx - mw / 2, my + mh / 2, mx - mw / 2, my)
             cavity.closeSubpath()
             
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(cavity_grad))
             painter.drawPath(cavity)
             
-            # 2. Upper Teeth Arch
-            teeth_w = mw * 0.7
-            teeth_h = max(2.0, mh * 0.22)
+            # 2. Upper/Lower Teeth curves
+            teeth_w = mw * 0.72
+            teeth_h = max(1.8, mh * 0.22)
             painter.setBrush(QColor(255, 255, 255))
-            painter.drawRoundedRect(QRectF(-teeth_w / 2, mouth_y - mh / 2 + 0.5, teeth_w, teeth_h), 2, 2)
+            painter.drawRoundedRect(QRectF(mx - teeth_w / 2, my - mh / 2 + 0.5, teeth_w, teeth_h), 1.5, 1.5)
             
-            # 3. Pink Tongue
+            # 3. Pink tongue
             tongue_h = max(1.0, mh * 0.3)
-            tongue_grad = QLinearGradient(0, mouth_y + mh / 2 - tongue_h, 0, mouth_y + mh / 2)
-            tongue_grad.setColorAt(0.0, QColor(245, 125, 140))
-            tongue_grad.setColorAt(1.0, QColor(220, 95, 110))
-            painter.setBrush(QBrush(tongue_grad))
-            painter.drawEllipse(QRectF(-teeth_w * 0.5, mouth_y + mh / 2 - tongue_h, teeth_w, tongue_h + 1))
-
-        # 4. Glossy Lips (outline / cover overlay)
-        painter.setPen(QPen(QColor(180, 50, 75), 1.8))
-        lip_grad = QLinearGradient(0, mouth_y - 4, 0, mouth_y + 4)
-        lip_grad.setColorAt(0.0, QColor(240, 110, 130))   # bright coral lip color
-        lip_grad.setColorAt(1.0, QColor(210, 70, 90))
-        painter.setBrush(QBrush(lip_grad))
-        
-        if mh <= 2:
-            # Closed friendly smile
-            lip_path = QPainterPath()
-            lip_path.moveTo(-20, mouth_y)
-            lip_path.quadTo(0, mouth_y + 4.5, 20, mouth_y)
-            lip_path.quadTo(0, mouth_y + 1.5, -20, mouth_y)
-            lip_path.closeSubpath()
-            painter.drawPath(lip_path)
+            painter.setBrush(QColor(235, 115, 130))
+            painter.drawEllipse(QRectF(mx - teeth_w * 0.4, my + mh / 2 - tongue_h, teeth_w * 0.8, tongue_h + 1))
+            
+            # 4. Realistic Lip-Split (Draw top half and bottom half of cropped lips shifted apart)
+            # Mouth pixmap is 60x38. Top half is 60x19, bottom half is 60x19.
+            w, h = 32, 20
+            # Top lip
+            painter.drawPixmap(
+                QRectF(mx - w/2, my - h/2 - mh/2, w, h/2),
+                self.mouth_pixmap,
+                QRectF(0, 0, self.mouth_pixmap.width(), self.mouth_pixmap.height() / 2)
+            )
+            # Bottom lip
+            painter.drawPixmap(
+                QRectF(mx - w/2, my + mh/2, w, h/2),
+                self.mouth_pixmap,
+                QRectF(0, self.mouth_pixmap.height() / 2, self.mouth_pixmap.width(), self.mouth_pixmap.height() / 2)
+            )
+            
         else:
-            # Open lips paths
-            lip_path = QPainterPath()
-            lip_path.moveTo(-mw / 2 - 2, mouth_y)
-            # Upper lip curve
-            lip_path.cubicTo(-mw / 4, mouth_y - mh / 2 - 2, mw / 4, mouth_y - mh / 2 - 2, mw / 2 + 2, mouth_y)
-            # Lower lip curve
-            lip_path.cubicTo(mw / 4, mouth_y + mh / 2 + 2, -mw / 4, mouth_y + mh / 2 + 2, -mw / 2 - 2, mouth_y)
-            lip_path.closeSubpath()
-            painter.drawPath(lip_path)
-
+            # Closed mouth: render her actual closed mouth from the photo
+            w, h = 30, 20
+            target_rect = QRectF(mx - w/2, my - h/2, w, h)
+            painter.drawPixmap(target_rect, self.mouth_pixmap, QRectF(self.mouth_pixmap.rect()))
+            
         painter.restore()
 
-    def _draw_hair_front(self, painter):
+    def _draw_arms_layer(self, painter, breath_y):
+        # Render high-resolution arms using textured sleeves to match the navy blazer
         painter.save()
-        painter.translate(180, 155)
-        painter.rotate(self._head_tilt * 0.7)
+        painter.translate(180, 250)
         
-        hair_grad = QLinearGradient(0, -90, 0, 80)
-        hair_grad.setColorAt(0.0, QColor(115, 74, 52))    # Rich brown
-        hair_grad.setColorAt(0.7, QColor(95, 60, 42))     # Warm base
-        hair_grad.setColorAt(1.0, QColor(70, 42, 28))
-        
-        highlight = QColor(158, 114, 88)  # soft warm blonde highlights
-        sway = math.sin(self._gesture_phase * 0.8) * 1.5
-        
-        # 1. Front Hair Bangs strands
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(hair_grad))
-        
-        bangs = QPainterPath()
-        bangs.moveTo(-60, -50)
-        bangs.cubicTo(-40, -82, 40, -82, 60, -50)
-        # Strands falling on forehead
-        bangs.cubicTo(50, -22, 42, 0, 36, -5)
-        bangs.cubicTo(20, -28, 10, -5, 0, -8)
-        bangs.cubicTo(-10, -5, -20, -28, -36, -5)
-        bangs.cubicTo(-42, 0, -50, -22, -60, -50)
-        bangs.closeSubpath()
-        painter.drawPath(bangs)
-        
-        # 2. Side lock framing (Left and Right)
-        lock_l = QPainterPath()
-        lock_l.moveTo(-54, -40)
-        lock_l.cubicTo(-68, 20, -52, 90 + sway, -45, 120 + sway)
-        lock_l.cubicTo(-58, 90 + sway, -62, 20, -54, -40)
-        lock_l.closeSubpath()
-        
-        lock_r = QPainterPath()
-        lock_r.moveTo(54, -40)
-        lock_r.cubicTo(68, 20, 52, 90 - sway, 45, 120 - sway)
-        lock_r.cubicTo(58, 90 - sway, 62, 20, 54, -40)
-        lock_r.closeSubpath()
-        
-        painter.drawPath(lock_l)
-        painter.drawPath(lock_r)
-        
-        # 3. Soft Hair Shine Highlight
-        shine = QPainterPath()
-        shine.moveTo(-35, -55)
-        shine.quadTo(0, -68, 35, -55)
-        shine.quadTo(0, -65, -35, -55)
-        shine.closeSubpath()
-        painter.setBrush(highlight)
-        painter.drawPath(shine)
-        
-        painter.restore()
-
-    def _draw_arms(self, painter, breath_y):
-        painter.save()
-        painter.translate(180, 155)
-        
+        body_top = 72 + breath_y * 0.6
         sleeve_color = QColor(15, 30, 85)     # Navy sleeve
-        skin_color = QColor(255, 222, 210)    # Skin forearm
-        body_top = 62 + breath_y * 0.7
+        skin_color = QColor(255, 222, 210)    # skin forearm
         
-        # Helper to draw realistic articulated arm segment
         def draw_arm(sh_x, sh_y, el_x, el_y, hd_x, hd_y, state_pointing=False):
             painter.save()
             # Sleeve stroke
@@ -582,11 +341,10 @@ class RealisticHumanAvatar(QWidget):
             # Forearm skin stroke
             painter.setPen(QPen(skin_color, 11, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             painter.drawLine(int(el_x), int(el_y), int(hd_x), int(hd_y))
-            # Hand shape (realistic vector hand)
+            # Hand shape
             painter.setPen(Qt.NoPen)
             painter.setBrush(skin_color)
             if state_pointing:
-                # Extend pointing hand path
                 hand = QPainterPath()
                 hand.moveTo(hd_x, hd_y - 4)
                 hand.lineTo(hd_x + 12, hd_y - 2)   # pointing finger
@@ -597,7 +355,7 @@ class RealisticHumanAvatar(QWidget):
             else:
                 painter.drawEllipse(QPointF(hd_x, hd_y), 8, 8)
             painter.restore()
-            
+
         shoulder_l = (-66, body_top + 12)
         shoulder_r = (66, body_top + 12)
         
@@ -628,7 +386,6 @@ class RealisticHumanAvatar(QWidget):
             draw_arm(*shoulder_r, 52, body_top + 48, 22, body_top + 78)
             
         elif self.state == "listening":
-            # Balanced breathing rest
             lean = math.sin(self._nod_phase) * 2.5
             draw_arm(*shoulder_l, -68, body_top + 52 + lean, -62, body_top + 105)
             draw_arm(*shoulder_r, 68, body_top + 52 - lean, 62, body_top + 105)
@@ -651,7 +408,7 @@ class VideoAvatar(QWidget):
     Supports playing high-fidelity H.264 MP4 videos (e.g. generated via Hedra/HeyGen)
     smoothly at 60 FPS with natural blinks, mouth/teeth movements, and body sways.
     Mutes the video audios automatically to sync seamlessly with real-time multilingual TTS.
-    Falls back to a high-fidelity vector digital human (RealisticHumanAvatar) if videos are missing.
+    Falls back to a photorealistic digital human (RealisticHumanAvatar) if videos are missing.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
