@@ -64,7 +64,9 @@ class VideoAvatar(QWidget):
         self.set_state("greeting")
 
     def set_speaking(self, is_speaking: bool):
-        pass
+        if self.movie:
+            # Pause the animated movie loop when not speaking to stop lip sync/mouth movements instantly
+            self.movie.setPaused(not is_speaking)
 
     def set_visitor_position(self, rel_x: float, rel_y: float):
         pass # Gaze tracking is pre-rendered in high-fidelity GIF loop

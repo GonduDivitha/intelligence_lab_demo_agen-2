@@ -21,7 +21,7 @@ def create_presenter_gifs():
     output_dir = os.path.join('assets', 'gifs')
     os.makedirs(output_dir, exist_ok=True)
 
-    states = ['idle', 'speaking', 'thinking', 'greeting']
+    states = ['idle', 'speaking', 'thinking', 'greeting', 'presenting']
     fps = 30
     duration = 2.0 # 2 seconds per GIF
     total_frames = int(fps * duration)
@@ -41,6 +41,9 @@ def create_presenter_gifs():
             if state == 'speaking':
                 sway = math.sin(phase * 2) * 12.0
                 tilt = math.sin(phase) * 1.5
+            elif state == 'presenting':
+                sway = math.sin(phase) * 6.0
+                tilt = math.sin(phase) * 0.8
             elif state == 'greeting':
                 sway = math.sin(phase) * 10.0
                 tilt = math.cos(phase) * 2.0
@@ -79,7 +82,7 @@ def create_presenter_gifs():
             f_mouth = transform_point(mouth_x, mouth_y, M)
 
             # Apply photo-realistic lip sync warp (vertical stretching/compression of her actual lips)
-            if state in ['speaking', 'greeting']:
+            if state in ['speaking', 'greeting', 'presenting']:
                 mouth_phase = (frame_idx / 10.0) * math.pi * 2
                 open_factor = 0.5 + 0.5 * math.sin(mouth_phase)
                 scale_y = 0.90 + open_factor * 0.35  # Varies between 0.90 (closed) and 1.25 (open)
@@ -110,6 +113,31 @@ def create_presenter_gifs():
                         roi_bot = frame[y_end-3:y_end+3, x1:x2]
                         frame[y_end-3:y_end+3, x1:x2] = cv2.GaussianBlur(roi_bot, (3, 3), 0)
 
+            # Apply pointing gesture overlay during presenting state
+            if state == 'presenting':
+                # Animate pointing arm slightly with breathing phase
+                hand_x = 90 + int(math.sin(phase) * 5)
+                hand_y = 260 + int(math.cos(phase) * 3)
+                
+                # Draw dark navy blue suit sleeve (matches her jacket)
+                # Start near shoulder/chest (170, 340) and extend to hand
+                sleeve_pts = np.array([
+                    [170, 340],
+                    [180, 290],
+                    [hand_x + 10, hand_y - 5],
+                    [hand_x - 5, hand_y + 15]
+                ], dtype=np.int32)
+                cv2.fillPoly(frame, [sleeve_pts], (90, 45, 25)) # Dark navy BGR
+                cv2.polylines(frame, [sleeve_pts], True, (60, 30, 15), 1)
+                
+                # Draw skin-colored hand pointing left
+                # Hand base
+                cv2.circle(frame, (hand_x, hand_y), 10, (190, 203, 248), -1)
+                # Extended index finger pointing left
+                cv2.line(frame, (hand_x, hand_y - 2), (hand_x - 25, hand_y - 5), (190, 203, 248), 4)
+                # Thumb pointing up-left
+                cv2.line(frame, (hand_x + 2, hand_y - 5), (hand_x - 10, hand_y - 15), (190, 203, 248), 3)
+
             # Convert BGR (OpenCV) to RGB (Pillow)
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             pil_img = Image.fromarray(rgb_frame)
@@ -130,7 +158,7 @@ def create_presenter_gifs():
     for i in range(5):
         slide_gif_path = os.path.join(output_dir, f"slide{i}.gif")
         import shutil
-        shutil.copy2(os.path.join(output_dir, "speaking.gif"), slide_gif_path)
+        shutil.copy2(os.path.join(output_dir, "presenting.gif"), slide_gif_path)
         print(f"Linked slide{i}.gif")
 
 if __name__ == '__main__':
