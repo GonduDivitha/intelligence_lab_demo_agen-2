@@ -136,15 +136,18 @@ class VideoAvatar(QWidget):
         # 1. Try to load H.264 MP4 Video first
         mp4_path = os.path.join(self.videos_dir, f"{media_filename}.mp4")
         
+        def is_valid_mp4(path):
+            return os.path.exists(path) and os.path.getsize(path) > 50 * 1024
+
         # If specific slide video is missing, try fallback speaking.mp4
-        if not os.path.exists(mp4_path) and ("slide" in media_filename or "greeting" in media_filename):
+        if not is_valid_mp4(mp4_path) and ("slide" in media_filename or "greeting" in media_filename):
             if self.is_speaking:
                 mp4_path = os.path.join(self.videos_dir, "speaking.mp4")
             else:
                 # If silent speaking file is missing, default to idle
                 mp4_path = os.path.join(self.videos_dir, "idle.mp4")
 
-        if os.path.exists(mp4_path):
+        if is_valid_mp4(mp4_path):
             if mp4_path != self.current_media_path:
                 logger.info(f"Playing high-definition presenter video: {os.path.basename(mp4_path)}")
                 self.current_media_path = mp4_path
