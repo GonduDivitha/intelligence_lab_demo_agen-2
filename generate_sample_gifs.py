@@ -15,8 +15,8 @@ def create_presenter_gifs():
     h, w, _ = img.shape
 
     # Exact coordinates on original 896x1200 image
-    mouth_x, mouth_y = 448, 380
-    left_eye_x, right_eye_x, eye_y = 405, 491, 280
+    mouth_x, mouth_y = 453, 358
+    left_eye_x, right_eye_x, eye_y = 420, 486, 295
 
     output_dir = os.path.join('assets', 'gifs')
     os.makedirs(output_dir, exist_ok=True)
