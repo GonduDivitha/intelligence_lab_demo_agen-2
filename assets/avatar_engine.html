@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0c0e26;overflow:hidden}
+canvas{display:block;width:100vw;height:100vh}
+#glow{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 45%,rgba(50,80,180,0.08) 0%,transparent 60%);
+  transition:opacity 0.5s}
+#speak-ring{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;
+  opacity:0;transition:opacity 0.4s;
+  background:radial-gradient(ellipse at 50% 50%,transparent 38%,rgba(80,140,255,0.12) 42%,transparent 46%);
+  animation:pulseRing 2s ease-in-out infinite}
+@keyframes pulseRing{
+  0%,100%{transform:scale(1);opacity:0}
+  50%{transform:scale(1.03)}
+}
+#speak-ring.active{opacity:1}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="glow"></div>
+<div id="speak-ring"></div>
+
+<script>
+// =====================================================================
+//  Live2D-Style WebGL Mesh Deformation Avatar Engine
+//  Produces genuine facial animation on a 2D image:
+//    - Real mesh vertex deformation for lip sync (not image switching)
+//    - Smooth jaw opening, lip shaping, cheek stretching
+//    - Natural eyelid blink deformation
+//    - Eyebrow movement for speech emphasis
+//    - Breathing and head sway via vertex displacement
+// =====================================================================
+
+const GRID_W = 30, GRID_H = 40;
+const IMG_SRC = 'presenter_base.jpg';
+const CHARS_PER_SEC = 13;
+
+// ── Shaders ──────────────────────────────────────────────────────────
+const VS = `
+attribute vec2 a_pos;
+attribute vec2 a_uv;
+uniform vec2 u_res;
+uniform vec2 u_off;
+uniform float u_scale;
+varying vec2 v_uv;
+void main(){
+  vec2 p = a_pos * u_scale + u_off;
+  vec2 c = (p / u_res) * 2.0 - 1.0;
+  c.y = -c.y;
+  gl_Position = vec4(c, 0.0, 1.0);
+  v_uv = a_uv;
+}`;
+
+const FS = `
+precision mediump float;
+varying vec2 v_uv;
+uniform sampler2D u_tex;
+void main(){ gl_FragColor = texture2D(u_tex, v_uv); }`;
+
+// ── State ────────────────────────────────────────────────────────────
+let gl, program, posBuf, uvBuf, idxBuf, texture;
+let a_pos, a_uv, u_res, u_off, u_scale, u_tex;
+let imgW = 896, imgH = 1200, scale = 1, offX = 0, offY = 0;
+let basePos = [], curPos = [], uvs = [], indices = [];
+let posF32, uvF32, idxU16;
+let lastT = 0, time = 0;
+
+// Animation
+let isSpeaking = false, speakText = '', textIdx = 0, charTimer = 0;
+let targetViseme = 'rest', currentState = 'idle';
+let blinkTimer = 0, nextBlink = 3 + Math.random()*3, blinkPhase = 0;
+
+// ── Bone Definitions ─────────────────────────────────────────────────
+// Each bone deforms vertices within its radius
+// mask: 'all'=everywhere, 'below'=only below center, 'above'=only above
+const bones = [
+  // Mouth — precise coords from face detection on 896x1200 image
+  {name:'jaw',     cx:0.509,cy:0.365,r:0.065,dx:0,  dy:18, mask:'below', val:0, target:0},
+  {name:'loLip',   cx:0.509,cy:0.340,r:0.030,dx:0,  dy:12, mask:'below', val:0, target:0},
+  {name:'upLip',   cx:0.509,cy:0.320,r:0.022,dx:0,  dy:-5, mask:'above', val:0, target:0},
+  {name:'strL',    cx:0.475,cy:0.328,r:0.020,dx:-6,  dy:0, mask:'all',   val:0, target:0},
+  {name:'strR',    cx:0.543,cy:0.328,r:0.020,dx:6,   dy:0, mask:'all',   val:0, target:0},
+  {name:'pucker',  cx:0.509,cy:0.328,r:0.035,dx:0,  dy:0,  mask:'all',   val:0, target:0, special:'pucker'},
+  // Eyes — from face detection: L(0.468,0.266) R(0.550,0.266)
+  {name:'blinkL',  cx:0.468,cy:0.266,r:0.025,dx:0,  dy:10, mask:'above', val:0, target:0},
+  {name:'blinkR',  cx:0.550,cy:0.266,r:0.025,dx:0,  dy:10, mask:'above', val:0, target:0},
+  // Eyebrows — from face detection: L(0.460,0.246) R(0.558,0.246)
+  {name:'browL',   cx:0.460,cy:0.246,r:0.022,dx:0,  dy:-4, mask:'all',   val:0, target:0},
+  {name:'browR',   cx:0.558,cy:0.246,r:0.022,dx:0,  dy:-4, mask:'all',   val:0, target:0},
+  // Cheeks
+  {name:'cheekL',  cx:0.427,cy:0.297,r:0.028,dx:-2, dy:2,  mask:'all',   val:0, target:0},
+  {name:'cheekR',  cx:0.591,cy:0.297,r:0.028,dx:2,  dy:2,  mask:'all',   val:0, target:0},
+];
+
+const boneMap = {};
+bones.forEach(b => boneMap[b.name] = b);
+
+// ── Viseme Definitions ───────────────────────────────────────────────
+const visemes = {
+  rest: {jaw:0, loLip:0, upLip:0, strL:0, strR:0, pucker:0, cheekL:0, cheekR:0},
+  aa:   {jaw:0.7, loLip:0.5, upLip:0.25, strL:0.15, strR:0.15, pucker:0, cheekL:0.2, cheekR:0.2},
+  ee:   {jaw:0.2, loLip:0.15, upLip:0.08, strL:0.5, strR:0.5, pucker:0, cheekL:0.3, cheekR:0.3},
+  oh:   {jaw:0.5, loLip:0.3, upLip:0.1, strL:0, strR:0, pucker:0.5, cheekL:0.1, cheekR:0.1},
+  oo:   {jaw:0.25, loLip:0.15, upLip:0.05, strL:0, strR:0, pucker:0.7, cheekL:0, cheekR:0},
+  ff:   {jaw:0.04, loLip:0.15, upLip:0.2, strL:0.05, strR:0.05, pucker:0, cheekL:0, cheekR:0},
+  mm:   {jaw:0, loLip:0, upLip:0, strL:0, strR:0, pucker:0.15, cheekL:0, cheekR:0},
+  ss:   {jaw:0.08, loLip:0.04, upLip:0.04, strL:0.2, strR:0.2, pucker:0, cheekL:0.1, cheekR:0.1},
+  th:   {jaw:0.12, loLip:0.1, upLip:0.08, strL:0.1, strR:0.1, pucker:0, cheekL:0, cheekR:0},
+};
+
+const charToViseme = {
+  a:'aa',e:'ee',i:'ee',o:'oh',u:'oo',
+  b:'mm',m:'mm',p:'mm',
+  f:'ff',v:'ff',
+  s:'ss',z:'ss',c:'ss',x:'ss',
+  w:'oo',r:'oh',q:'oo',
+  d:'th',t:'th',n:'th',l:'th',
+  g:'ss',k:'ss',j:'ee',y:'ee',h:'aa',
+  ' ':'rest',',':'rest','.':'rest','!':'rest','?':'rest',
+};
+
+// ── Mesh Generation ──────────────────────────────────────────────────
+function createMesh(w,h){
+  for(let j=0;j<=GRID_H;j++){
+    for(let i=0;i<=GRID_W;i++){
+      const u=i/GRID_W, v=j/GRID_H;
+      basePos.push(u*w, v*h);
+      curPos.push(u*w, v*h);
+      uvs.push(u,v);
+    }
+  }
+  for(let j=0;j<GRID_H;j++){
+    for(let i=0;i<GRID_W;i++){
+      const idx=j*(GRID_W+1)+i;
+      indices.push(idx, idx+1, idx+GRID_W+1);
+      indices.push(idx+1, idx+GRID_W+2, idx+GRID_W+1);
+    }
+  }
+  posF32=new Float32Array(curPos);
+  uvF32=new Float32Array(uvs);
+  idxU16=new Uint16Array(indices);
+}
+
+// ── WebGL Setup ──────────────────────────────────────────────────────
+function initGL(){
+  const canvas=document.getElementById('c');
+  gl=canvas.getContext('webgl',{alpha:false,antialias:true});
+  if(!gl){console.error('No WebGL');return false;}
+
+  function compile(type,src){
+    const s=gl.createShader(type);
+    gl.shaderSource(s,src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error(gl.getShaderInfoLog(s));}
+    return s;
+  }
+  const vs=compile(gl.VERTEX_SHADER,VS);
+  const fs=compile(gl.FRAGMENT_SHADER,FS);
+  program=gl.createProgram();
+  gl.attachShader(program,vs);
+  gl.attachShader(program,fs);
+  gl.linkProgram(program);
+  gl.useProgram(program);
+
+  a_pos=gl.getAttribLocation(program,'a_pos');
+  a_uv=gl.getAttribLocation(program,'a_uv');
+  u_res=gl.getUniformLocation(program,'u_res');
+  u_off=gl.getUniformLocation(program,'u_off');
+  u_scale=gl.getUniformLocation(program,'u_scale');
+  u_tex=gl.getUniformLocation(program,'u_tex');
+
+  posBuf=gl.createBuffer();
+  uvBuf=gl.createBuffer();
+  idxBuf=gl.createBuffer();
+
+  gl.bindBuffer(gl.ARRAY_BUFFER,uvBuf);
+  gl.bufferData(gl.ARRAY_BUFFER,uvF32,gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,idxBuf);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,idxU16,gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER,posBuf);
+  gl.bufferData(gl.ARRAY_BUFFER,posF32,gl.DYNAMIC_DRAW);
+
+  texture=gl.createTexture();
+  return true;
+}
+
+function loadTexture(img){
+  gl.bindTexture(gl.TEXTURE_2D,texture);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+}
+
+function resize(){
+  const canvas=document.getElementById('c');
+  canvas.width=window.innerWidth;
+  canvas.height=window.innerHeight;
+  gl.viewport(0,0,canvas.width,canvas.height);
+  const sx=canvas.width/imgW, sy=canvas.height/imgH;
+  scale=Math.min(sx,sy);
+  offX=(canvas.width-imgW*scale)/2;
+  offY=(canvas.height-imgH*scale)/2;
+}
+
+// ── Deformation Engine ───────────────────────────────────────────────
+function applyDeformations(){
+  // Reset to base
+  for(let k=0;k<basePos.length;k++) curPos[k]=basePos[k];
+
+  // 1. Apply each bone
+  for(const bone of bones){
+    if(Math.abs(bone.val)<0.001) continue;
+    const cx=bone.cx*imgW, cy=bone.cy*imgH;
+    const r=bone.r*imgH;
+
+    for(let k=0;k<curPos.length;k+=2){
+      const bx=basePos[k], by=basePos[k+1];
+
+      // Mask check
+      if(bone.mask==='below' && by<cy) continue;
+      if(bone.mask==='above' && by>cy) continue;
+
+      const ddx=bx-cx, ddy=by-cy;
+      const dist=Math.sqrt(ddx*ddx+ddy*ddy);
+      if(dist>r) continue;
+
+      // Smoothstep falloff
+      const t=1-dist/r;
+      const w=t*t*(3-2*t);
+
+      if(bone.special==='pucker'){
+        // Pull mouth corners toward center
+        curPos[k]+=(cx-bx)*w*bone.val*0.25;
+      } else {
+        curPos[k]+=bone.dx*bone.val*w;
+        curPos[k+1]+=bone.dy*bone.val*w;
+      }
+    }
+  }
+
+  // 2. Breathing — subtle chest/belly expansion
+  const breathVal=Math.sin(time*1.2)*0.002;
+  for(let k=0;k<curPos.length;k+=2){
+    const ny=basePos[k+1]/imgH;
+    if(ny>0.389){
+      const bw=(ny-0.389)*1.5;
+      const nx=basePos[k]/imgW;
+      curPos[k]+=(nx-0.5)*imgW*breathVal*bw;
+      curPos[k+1]-=breathVal*imgH*bw*0.3;
+    }
+  }
+
+  // 3. Head sway — subtle rotation of face area
+  const swayA=Math.sin(time*0.6)*0.0018;
+  const tiltA=currentState==='thinking'? 0.006 : (currentState==='listening'? Math.sin(time*2)*0.003 : 0);
+  const totalAngle=swayA+tiltA;
+  const hcx=0.509*imgW, hcy=0.297*imgH;
+  const cosA=Math.cos(totalAngle), sinA=Math.sin(totalAngle);
+  for(let k=0;k<curPos.length;k+=2){
+    const ny=basePos[k+1]/imgH;
+    if(ny<0.389){
+      const dx=curPos[k]-hcx, dy=curPos[k+1]-hcy;
+      curPos[k]=hcx+dx*cosA-dy*sinA;
+      curPos[k+1]=hcy+dx*sinA+dy*cosA;
+    }
+  }
+
+  // Upload to GPU
+  posF32.set(curPos);
+  gl.bindBuffer(gl.ARRAY_BUFFER,posBuf);
+  gl.bufferSubData(gl.ARRAY_BUFFER,0,posF32);
+}
+
+// ── Animation Updates ────────────────────────────────────────────────
+function updateBones(dt){
+  const vis=visemes[targetViseme]||visemes.rest;
+  const speed=isSpeaking? 0.22 : 0.12;
+  for(const bone of bones){
+    const tv=vis[bone.name]||0;
+    // Don't override blink/brow targets from viseme
+    if(bone.name==='blinkL'||bone.name==='blinkR'||bone.name==='browL'||bone.name==='browR') continue;
+    bone.target=tv;
+    bone.val+=(bone.target-bone.val)*speed;
+  }
+  // Blinks and brows interpolate separately
+  boneMap.blinkL.val+=(boneMap.blinkL.target-boneMap.blinkL.val)*0.35;
+  boneMap.blinkR.val+=(boneMap.blinkR.target-boneMap.blinkR.val)*0.35;
+  boneMap.browL.val+=(boneMap.browL.target-boneMap.browL.val)*0.1;
+  boneMap.browR.val+=(boneMap.browR.target-boneMap.browR.val)*0.1;
+}
+
+function updateBlink(dt){
+  if(blinkPhase===0){
+    blinkTimer+=dt;
+    if(blinkTimer>=nextBlink){
+      blinkPhase=0.01; blinkTimer=0;
+      nextBlink=3+Math.random()*3;
+    }
+  } else {
+    blinkPhase+=dt*7;
+    if(blinkPhase>=1){
+      blinkPhase=0;
+      boneMap.blinkL.target=0;
+      boneMap.blinkR.target=0;
+      return;
+    }
+    let v;
+    if(blinkPhase<0.25) v=blinkPhase/0.25;        // closing
+    else if(blinkPhase<0.45) v=1.0;                // closed
+    else v=1.0-(blinkPhase-0.45)/0.55;             // opening
+    boneMap.blinkL.target=v;
+    boneMap.blinkR.target=v;
+  }
+}
+
+function updateSpeaking(dt){
+  const ring=document.getElementById('speak-ring');
+  if(!isSpeaking){
+    targetViseme='rest';
+    ring.classList.remove('active');
+    boneMap.browL.target*=0.92;
+    boneMap.browR.target*=0.92;
+    return;
+  }
+  ring.classList.add('active');
+  charTimer+=dt;
+  if(charTimer>=1/CHARS_PER_SEC){
+    charTimer=0;
+    if(speakText && textIdx<speakText.length){
+      const ch=speakText[textIdx].toLowerCase();
+      targetViseme=charToViseme[ch]||'ss';
+      // Raise eyebrows at word starts for emphasis
+      if(textIdx>0 && speakText[textIdx-1]===' '){
+        boneMap.browL.target=0.35+Math.random()*0.15;
+        boneMap.browR.target=0.35+Math.random()*0.15;
+      }
+      textIdx++;
+    } else {
+      // Auto-cycle when no text provided
+      const cycle=['aa','ss','ee','rest','oh','ss','aa','mm','ee','th'];
+      const idx=Math.floor(Date.now()/(1000/CHARS_PER_SEC))%cycle.length;
+      targetViseme=cycle[idx];
+      // Subtle eyebrow emphasis
+      if(Math.random()<0.08){
+        boneMap.browL.target=0.25;
+        boneMap.browR.target=0.25;
+      }
+    }
+  }
+  // Decay eyebrows
+  boneMap.browL.target*=0.96;
+  boneMap.browR.target*=0.96;
+}
+
+// ── Render Loop ──────────────────────────────────────────────────────
+function render(t){
+  const dt=(t-lastT)/1000; lastT=t; time+=dt;
+
+  updateBlink(dt);
+  updateSpeaking(dt);
+  updateBones(dt);
+  applyDeformations();
+
+  gl.clearColor(0.047,0.055,0.149,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(program);
+
+  gl.uniform2f(u_res,gl.canvas.width,gl.canvas.height);
+  gl.uniform2f(u_off,offX,offY);
+  gl.uniform1f(u_scale,scale);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER,posBuf);
+  gl.enableVertexAttribArray(a_pos);
+  gl.vertexAttribPointer(a_pos,2,gl.FLOAT,false,0,0);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER,uvBuf);
+  gl.enableVertexAttribArray(a_uv);
+  gl.vertexAttribPointer(a_uv,2,gl.FLOAT,false,0,0);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D,texture);
+  gl.uniform1i(u_tex,0);
+
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,idxBuf);
+  gl.drawElements(gl.TRIANGLES,indices.length,gl.UNSIGNED_SHORT,0);
+
+  requestAnimationFrame(render);
+}
+
+// ── Public API (called from Python) ──────────────────────────────────
+window.avatarAPI = {
+  setSpeaking(val){ isSpeaking=!!val; if(!val){speakText='';textIdx=0;} },
+  setText(text){ speakText=text; textIdx=0; charTimer=0; },
+  setState(state){ currentState=state; },
+  triggerBlink(){ if(blinkPhase===0){blinkPhase=0.01;blinkTimer=0;} },
+  setViseme(name){ targetViseme=name; },
+};
+
+// ── Init ─────────────────────────────────────────────────────────────
+(function(){
+  const img=new Image();
+  img.onload=function(){
+    imgW=img.width; imgH=img.height;
+    createMesh(imgW,imgH);
+    if(!initGL()) return;
+    loadTexture(img);
+    resize();
+    window.addEventListener('resize',resize);
+    requestAnimationFrame(render);
+  };
+  img.src=IMG_SRC;
+})();
+</script>
+</body>
+</html>
