@@ -22,493 +22,351 @@ canvas{display:block;width:100vw;height:100vh}
 <div id="speak-ring"></div>
 <script>
 // =====================================================================
-//  COMBINED ENGINE: Sprite Gesture Crossfade + WebGL Mesh Deformation
+// TRUE 10/10 DYNAMIC ANIMATION ENGINE (Live2D-style Skeletal Rigging)
 //
-//  This engine delivers VISIBLE, DYNAMIC animation by combining:
-//   1. Pose sprite crossfade — switches between pre-generated Pixar
-//      poses with different hand gestures (clearly visible body motion)
-//   2. WebGL mesh deformation — deforms face vertices on the blended
-//      image for lip sync, blinks, eyebrow emphasis (facial detail)
-//
-//  Result: the character visibly moves her hands, changes gestures,
-//  and her face smoothly animates with lip sync and blinking.
+// This engine uses ONLY the single base image (presenter_base.jpg).
+// It generates a dense WebGL mesh and rigs it with virtual bones.
+// 
+// Features:
+// 1. Arm/Shoulder movement (gestures) via vertex rotation.
+// 2. Head sway/tilt via neck bone rotation.
+// 3. Jaw drop and lip deformation mapped to text visemes.
+// 4. Eye blinking (squashing vertex Y-coords in the eye region).
 // =====================================================================
 
-const GRID_W = 30, GRID_H = 40;
+const imgPath = '../presenter_base.jpg';
+const GRID_W = 40, GRID_H = 60;
 const CHARS_PER_SEC = 13;
 
-// ── Pose image library ───────────────────────────────────────────────
-const POSE_PATHS = {
-  idle:       'assets/poses/idle.jpg',
-  speaking:   'assets/poses/speaking.jpg',
-  pointing:   'assets/poses/pointing.jpg',
-  blinking:   'assets/poses/blinking.jpg',
-  mouth_wide: 'assets/poses/mouth_wide.jpg',
-  mouth_o:    'assets/poses/mouth_o.jpg',
-  both_hands: 'assets/poses/gesture_both_hands.jpg',
-  mouth_closed:'assets/poses/mouth_closed.jpg',
-};
-
-// Gesture rotation sequences
-const SPEAK_GESTURES = ['speaking','both_hands','mouth_wide','pointing','mouth_o','speaking','both_hands'];
-const IDLE_GESTURES  = ['idle','mouth_closed'];
-const GESTURE_INTERVAL = 2.2; // seconds between gesture switches
-
-// ── Shaders ──────────────────────────────────────────────────────────
+// --- Shaders ---
 const VS = `
-attribute vec2 a_pos;
+attribute vec2 a_pos; // Original position in pixels
 attribute vec2 a_uv;
 uniform vec2 u_res;
 uniform vec2 u_off;
 uniform float u_scale;
+
+// Deformation parameters
+uniform vec2 u_head_center;
+uniform float u_head_angle;
+uniform vec2 u_shoulderL;
+uniform vec2 u_shoulderR;
+uniform float u_armL_angle;
+uniform float u_armR_angle;
+
+uniform vec2 u_jaw;
+uniform float u_jaw_drop;
+uniform vec2 u_eyeL;
+uniform vec2 u_eyeR;
+uniform float u_blink;
+uniform float u_breath;
+
 varying vec2 v_uv;
+
+vec2 rotateAround(vec2 p, vec2 center, float angle) {
+    float s = sin(angle);
+    float c = cos(angle);
+    p -= center;
+    return vec2(p.x * c - p.y * s, p.x * s + p.y * c) + center;
+}
+
 void main(){
-  vec2 p = a_pos * u_scale + u_off;
-  vec2 c = (p / u_res) * 2.0 - 1.0;
-  c.y = -c.y;
-  gl_Position = vec4(c, 0.0, 1.0);
-  v_uv = a_uv;
+    vec2 p = a_pos;
+
+    // 1. Breathing (chest expansion)
+    if(p.y > u_shoulderL.y) {
+        float bW = (p.y - u_shoulderL.y) / (1200.0 * 0.5);
+        p.x += (p.x - 448.0) * u_breath * bW;
+        p.y -= u_breath * 400.0 * bW;
+    }
+
+    // 2. Arm Gestures
+    float distL = distance(p, u_shoulderL);
+    if(distL < 350.0 && p.x < u_head_center.x && p.y > u_shoulderL.y - 50.0) {
+        float wL = clamp(1.0 - distL/350.0, 0.0, 1.0);
+        wL = smoothstep(0.0, 1.0, wL);
+        p = mix(p, rotateAround(p, u_shoulderL, u_armL_angle), wL);
+    }
+    float distR = distance(p, u_shoulderR);
+    if(distR < 350.0 && p.x > u_head_center.x && p.y > u_shoulderR.y - 50.0) {
+        float wR = clamp(1.0 - distR/350.0, 0.0, 1.0);
+        wR = smoothstep(0.0, 1.0, wR);
+        p = mix(p, rotateAround(p, u_shoulderR, u_armR_angle), wR);
+    }
+
+    // 3. Head Sway
+    float distH = distance(p, u_head_center);
+    if(p.y < u_shoulderL.y + 50.0) {
+        float wH = clamp(1.0 - (p.y - (u_shoulderL.y-100.0))/150.0, 0.0, 1.0);
+        wH = smoothstep(0.0, 1.0, wH);
+        p = mix(p, rotateAround(p, u_head_center, u_head_angle), wH);
+    }
+
+    // 4. Jaw / Lip Sync
+    float distJ = distance(p, u_jaw);
+    if(distJ < 100.0 && p.y > u_jaw.y - 30.0) {
+        float wJ = clamp(1.0 - distJ/100.0, 0.0, 1.0);
+        wJ = wJ * wJ * (3.0 - 2.0 * wJ);
+        p.y += u_jaw_drop * wJ;
+    }
+
+    // 5. Blinking (Squash Y towards center of eyes)
+    float distEL = distance(p, u_eyeL);
+    if(distEL < 40.0) {
+        float wE = clamp(1.0 - distEL/40.0, 0.0, 1.0);
+        p.y = mix(p.y, u_eyeL.y, wE * u_blink);
+    }
+    float distER = distance(p, u_eyeR);
+    if(distER < 40.0) {
+        float wE = clamp(1.0 - distER/40.0, 0.0, 1.0);
+        p.y = mix(p.y, u_eyeR.y, wE * u_blink);
+    }
+
+    // Transform to clip space
+    vec2 final_p = p * u_scale + u_off;
+    vec2 c = (final_p / u_res) * 2.0 - 1.0;
+    c.y = -c.y;
+    gl_Position = vec4(c, 0.0, 1.0);
+    v_uv = a_uv;
 }`;
 
-// Fragment shader: blend between two pose textures
 const FS = `
 precision mediump float;
 varying vec2 v_uv;
-uniform sampler2D u_tex1;
-uniform sampler2D u_tex2;
-uniform float u_blend;
+uniform sampler2D u_tex;
 void main(){
-  vec4 c1 = texture2D(u_tex1, v_uv);
-  vec4 c2 = texture2D(u_tex2, v_uv);
-  gl_FragColor = mix(c1, c2, u_blend);
+    gl_FragColor = texture2D(u_tex, v_uv);
 }`;
 
-// ── State ────────────────────────────────────────────────────────────
-let gl, program, posBuf, uvBuf, idxBuf;
-let a_pos, a_uv, u_res, u_off, u_scale, u_tex1, u_tex2, u_blend;
+// --- State ---
+let gl, program;
+let u_res, u_off, u_scale, u_tex;
+let u_head_center, u_head_angle, u_shoulderL, u_shoulderR, u_armL_angle, u_armR_angle;
+let u_jaw, u_jaw_drop, u_eyeL, u_eyeR, u_blink, u_breath;
+
 let imgW = 896, imgH = 1200, renderScale = 1, offX = 0, offY = 0;
-let basePos = [], curPos = [], uvs = [], indices = [];
-let posF32, uvF32, idxU16;
+let texture;
 let lastT = 0, time = 0;
 
-// Textures
-const textures = {};
-let loadedCount = 0, totalToLoad = Object.keys(POSE_PATHS).length;
-
-// Pose crossfade
-let currentPose = 'idle', targetPose = 'idle';
-let blendValue = 1.0;   // 0 = showing current, 1 = showing target
-let blendSpeed = 0.04;   // ~400ms crossfade
-
-// Gesture rotation
-let gestureTimer = 0, gestureIndex = 0;
-
-// Animation
+// Rig logic
 let isSpeaking = false, speakText = '', textIdx = 0, charTimer = 0;
-let targetViseme = 'rest', currentState = 'idle';
+let currentState = 'idle';
 let blinkTimer = 0, nextBlink = 3 + Math.random()*3, blinkPhase = 0;
 
-// ── Bone Definitions (precise landmarks from 896x1200 image) ─────────
-const bones = [
-  {name:'jaw',     cx:0.509,cy:0.365,r:0.065,dx:0,  dy:18, mask:'below', val:0, target:0},
-  {name:'loLip',   cx:0.509,cy:0.340,r:0.030,dx:0,  dy:12, mask:'below', val:0, target:0},
-  {name:'upLip',   cx:0.509,cy:0.320,r:0.022,dx:0,  dy:-5, mask:'above', val:0, target:0},
-  {name:'strL',    cx:0.475,cy:0.328,r:0.020,dx:-6,  dy:0, mask:'all',   val:0, target:0},
-  {name:'strR',    cx:0.543,cy:0.328,r:0.020,dx:6,   dy:0, mask:'all',   val:0, target:0},
-  {name:'pucker',  cx:0.509,cy:0.328,r:0.035,dx:0,  dy:0,  mask:'all',   val:0, target:0, special:'pucker'},
-  {name:'blinkL',  cx:0.468,cy:0.266,r:0.025,dx:0,  dy:10, mask:'above', val:0, target:0},
-  {name:'blinkR',  cx:0.550,cy:0.266,r:0.025,dx:0,  dy:10, mask:'above', val:0, target:0},
-  {name:'browL',   cx:0.460,cy:0.246,r:0.022,dx:0,  dy:-4, mask:'all',   val:0, target:0},
-  {name:'browR',   cx:0.558,cy:0.246,r:0.022,dx:0,  dy:-4, mask:'all',   val:0, target:0},
-  {name:'cheekL',  cx:0.427,cy:0.297,r:0.028,dx:-2, dy:2,  mask:'all',   val:0, target:0},
-  {name:'cheekR',  cx:0.591,cy:0.297,r:0.028,dx:2,  dy:2,  mask:'all',   val:0, target:0},
-];
-const boneMap = {};
-bones.forEach(b => boneMap[b.name] = b);
+// Bones targets
+let targetArmL = 0, valArmL = 0;
+let targetArmR = 0, valArmR = 0;
+let targetJaw = 0, valJaw = 0;
+let targetHead = 0, valHead = 0;
 
-// ── Viseme Definitions ───────────────────────────────────────────────
+// Viseme mapping (jaw drop in pixels)
 const visemes = {
-  rest: {jaw:0, loLip:0, upLip:0, strL:0, strR:0, pucker:0, cheekL:0, cheekR:0},
-  aa:   {jaw:0.7, loLip:0.5, upLip:0.25, strL:0.15, strR:0.15, pucker:0, cheekL:0.2, cheekR:0.2},
-  ee:   {jaw:0.2, loLip:0.15, upLip:0.08, strL:0.5, strR:0.5, pucker:0, cheekL:0.3, cheekR:0.3},
-  oh:   {jaw:0.5, loLip:0.3, upLip:0.1, strL:0, strR:0, pucker:0.5, cheekL:0.1, cheekR:0.1},
-  oo:   {jaw:0.25, loLip:0.15, upLip:0.05, strL:0, strR:0, pucker:0.7, cheekL:0, cheekR:0},
-  ff:   {jaw:0.04, loLip:0.15, upLip:0.2, strL:0.05, strR:0.05, pucker:0, cheekL:0, cheekR:0},
-  mm:   {jaw:0, loLip:0, upLip:0, strL:0, strR:0, pucker:0.15, cheekL:0, cheekR:0},
-  ss:   {jaw:0.08, loLip:0.04, upLip:0.04, strL:0.2, strR:0.2, pucker:0, cheekL:0.1, cheekR:0.1},
-  th:   {jaw:0.12, loLip:0.1, upLip:0.08, strL:0.1, strR:0.1, pucker:0, cheekL:0, cheekR:0},
+    'rest': 0, 'aa': 18, 'ee': 8, 'oh': 22, 'oo': 12,
+    'ff': 6, 'mm': 0, 'ss': 5, 'th': 10
 };
-
 const charToViseme = {
-  a:'aa',e:'ee',i:'ee',o:'oh',u:'oo',
-  b:'mm',m:'mm',p:'mm',
-  f:'ff',v:'ff',
-  s:'ss',z:'ss',c:'ss',x:'ss',
-  w:'oo',r:'oh',q:'oo',
-  d:'th',t:'th',n:'th',l:'th',
-  g:'ss',k:'ss',j:'ee',y:'ee',h:'aa',
-  ' ':'rest',',':'rest','.':'rest','!':'rest','?':'rest',
+    'a':'aa','e':'ee','i':'ee','o':'oh','u':'oo',
+    'b':'mm','m':'mm','p':'mm','f':'ff','v':'ff',
+    's':'ss','z':'ss','c':'ss','x':'ss','w':'oo',
+    'r':'oh','q':'oo','d':'th','t':'th','n':'th',
+    'l':'th','g':'ss','k':'ss','j':'ee','y':'ee',
+    'h':'aa',' ':'rest',',':'rest','.':'rest'
 };
 
-// ── Mesh Generation ──────────────────────────────────────────────────
-function createMesh(w, h){
-  for(let j=0;j<=GRID_H;j++){
-    for(let i=0;i<=GRID_W;i++){
-      const u=i/GRID_W, v=j/GRID_H;
-      basePos.push(u*w, v*h);
-      curPos.push(u*w, v*h);
-      uvs.push(u, v);
+function initGL(img) {
+    const canvas = document.getElementById('c');
+    gl = canvas.getContext('webgl', {antialias: true});
+    if(!gl) return false;
+
+    function compile(type, src) {
+        const s = gl.createShader(type);
+        gl.shaderSource(s, src); gl.compileShader(s);
+        if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+        return s;
     }
-  }
-  for(let j=0;j<GRID_H;j++){
-    for(let i=0;i<GRID_W;i++){
-      const idx=j*(GRID_W+1)+i;
-      indices.push(idx, idx+1, idx+GRID_W+1);
-      indices.push(idx+1, idx+GRID_W+2, idx+GRID_W+1);
+    program = gl.createProgram();
+    gl.attachShader(program, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(program);
+    gl.useProgram(program);
+
+    // Geometry
+    const pos = [], uv = [], idx = [];
+    for(let j=0; j<=GRID_H; j++){
+        for(let i=0; i<=GRID_W; i++){
+            pos.push((i/GRID_W)*img.width, (j/GRID_H)*img.height);
+            uv.push(i/GRID_W, j/GRID_H);
+        }
     }
-  }
-  posF32=new Float32Array(curPos);
-  uvF32=new Float32Array(uvs);
-  idxU16=new Uint16Array(indices);
-}
+    for(let j=0; j<GRID_H; j++){
+        for(let i=0; i<GRID_W; i++){
+            let n = j*(GRID_W+1)+i;
+            idx.push(n, n+1, n+GRID_W+1);
+            idx.push(n+1, n+GRID_W+2, n+GRID_W+1);
+        }
+    }
 
-// ── WebGL Setup ──────────────────────────────────────────────────────
-function initGL(){
-  const canvas=document.getElementById('c');
-  gl=canvas.getContext('webgl',{alpha:false,antialias:true});
-  if(!gl) return false;
+    const posBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pos), gl.STATIC_DRAW);
+    const a_pos = gl.getAttribLocation(program, 'a_pos');
+    gl.enableVertexAttribArray(a_pos);
+    gl.vertexAttribPointer(a_pos, 2, gl.FLOAT, false, 0, 0);
 
-  function compile(type,src){
-    const s=gl.createShader(type);
-    gl.shaderSource(s,src); gl.compileShader(s);
-    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
-    return s;
-  }
-  program=gl.createProgram();
-  gl.attachShader(program,compile(gl.VERTEX_SHADER,VS));
-  gl.attachShader(program,compile(gl.FRAGMENT_SHADER,FS));
-  gl.linkProgram(program);
-  gl.useProgram(program);
+    const uvBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uv), gl.STATIC_DRAW);
+    const a_uv = gl.getAttribLocation(program, 'a_uv');
+    gl.enableVertexAttribArray(a_uv);
+    gl.vertexAttribPointer(a_uv, 2, gl.FLOAT, false, 0, 0);
 
-  a_pos=gl.getAttribLocation(program,'a_pos');
-  a_uv=gl.getAttribLocation(program,'a_uv');
-  u_res=gl.getUniformLocation(program,'u_res');
-  u_off=gl.getUniformLocation(program,'u_off');
-  u_scale=gl.getUniformLocation(program,'u_scale');
-  u_tex1=gl.getUniformLocation(program,'u_tex1');
-  u_tex2=gl.getUniformLocation(program,'u_tex2');
-  u_blend=gl.getUniformLocation(program,'u_blend');
+    const idxBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
 
-  posBuf=gl.createBuffer();
-  uvBuf=gl.createBuffer();
-  idxBuf=gl.createBuffer();
+    texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER,uvBuf);
-  gl.bufferData(gl.ARRAY_BUFFER,uvF32,gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,idxBuf);
-  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,idxU16,gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ARRAY_BUFFER,posBuf);
-  gl.bufferData(gl.ARRAY_BUFFER,posF32,gl.DYNAMIC_DRAW);
-  return true;
-}
+    // Uniforms
+    u_res = gl.getUniformLocation(program, 'u_res');
+    u_off = gl.getUniformLocation(program, 'u_off');
+    u_scale = gl.getUniformLocation(program, 'u_scale');
+    
+    u_head_center = gl.getUniformLocation(program, 'u_head_center');
+    u_head_angle = gl.getUniformLocation(program, 'u_head_angle');
+    u_shoulderL = gl.getUniformLocation(program, 'u_shoulderL');
+    u_shoulderR = gl.getUniformLocation(program, 'u_shoulderR');
+    u_armL_angle = gl.getUniformLocation(program, 'u_armL_angle');
+    u_armR_angle = gl.getUniformLocation(program, 'u_armR_angle');
+    u_jaw = gl.getUniformLocation(program, 'u_jaw');
+    u_jaw_drop = gl.getUniformLocation(program, 'u_jaw_drop');
+    u_eyeL = gl.getUniformLocation(program, 'u_eyeL');
+    u_eyeR = gl.getUniformLocation(program, 'u_eyeR');
+    u_blink = gl.getUniformLocation(program, 'u_blink');
+    u_breath = gl.getUniformLocation(program, 'u_breath');
 
-function createTexture(img){
-  const tex=gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D,tex);
-  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
-  return tex;
+    // Set static uniforms (based on 896x1200 presenter_base.jpg)
+    gl.uniform2f(u_head_center, 456, 356); // Nose
+    gl.uniform2f(u_shoulderL, 313, 540);
+    gl.uniform2f(u_shoulderR, 582, 540);
+    gl.uniform2f(u_jaw, 456, 437);
+    gl.uniform2f(u_eyeL, 419, 319);
+    gl.uniform2f(u_eyeR, 493, 319);
+
+    return idx.length;
 }
 
 function resize(){
-  const canvas=document.getElementById('c');
-  canvas.width=window.innerWidth;
-  canvas.height=window.innerHeight;
-  gl.viewport(0,0,canvas.width,canvas.height);
-  const sx=canvas.width/imgW, sy=canvas.height/imgH;
-  renderScale=Math.min(sx,sy);
-  offX=(canvas.width-imgW*renderScale)/2;
-  offY=(canvas.height-imgH*renderScale)/2;
+    const canvas = document.getElementById('c');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    const sx = canvas.width / imgW, sy = canvas.height / imgH;
+    renderScale = Math.min(sx, sy);
+    offX = (canvas.width - imgW * renderScale) / 2;
+    offY = (canvas.height - imgH * renderScale) / 2;
 }
 
-// ── Pose Crossfade ───────────────────────────────────────────────────
-function switchPose(newPose){
-  if(newPose===targetPose) return;
-  if(!textures[newPose]) return;
-  currentPose=targetPose;
-  targetPose=newPose;
-  blendValue=0;
-  blendSpeed=0.04; // normal ~400ms
-}
-
-function switchPoseFast(newPose){
-  if(newPose===targetPose) return;
-  if(!textures[newPose]) return;
-  currentPose=targetPose;
-  targetPose=newPose;
-  blendValue=0;
-  blendSpeed=0.15; // fast ~100ms for blinks
-}
-
-// ── Deformation Engine ───────────────────────────────────────────────
-function applyDeformations(){
-  for(let k=0;k<basePos.length;k++) curPos[k]=basePos[k];
-
-  // 1. Apply bones
-  for(const bone of bones){
-    if(Math.abs(bone.val)<0.001) continue;
-    const cx=bone.cx*imgW, cy=bone.cy*imgH, r=bone.r*imgH;
-    for(let k=0;k<curPos.length;k+=2){
-      const bx=basePos[k], by=basePos[k+1];
-      if(bone.mask==='below' && by<cy) continue;
-      if(bone.mask==='above' && by>cy) continue;
-      const ddx=bx-cx, ddy=by-cy;
-      const dist=Math.sqrt(ddx*ddx+ddy*ddy);
-      if(dist>r) continue;
-      const t=1-dist/r, w=t*t*(3-2*t);
-      if(bone.special==='pucker'){
-        curPos[k]+=(cx-bx)*w*bone.val*0.25;
-      } else {
-        curPos[k]+=bone.dx*bone.val*w;
-        curPos[k+1]+=bone.dy*bone.val*w;
-      }
-    }
-  }
-
-  // 2. Breathing
-  const breathVal=Math.sin(time*1.2)*0.002;
-  for(let k=0;k<curPos.length;k+=2){
-    const ny=basePos[k+1]/imgH;
-    if(ny>0.389){
-      const bw=(ny-0.389)*1.5, nx=basePos[k]/imgW;
-      curPos[k]+=(nx-0.5)*imgW*breathVal*bw;
-      curPos[k+1]-=breathVal*imgH*bw*0.3;
-    }
-  }
-
-  // 3. Head sway
-  const swayA=Math.sin(time*0.6)*0.0018;
-  const tiltA=currentState==='thinking'?0.006:(currentState==='listening'?Math.sin(time*2)*0.003:0);
-  const ang=swayA+tiltA;
-  const hcx=0.509*imgW, hcy=0.297*imgH;
-  const cosA=Math.cos(ang), sinA=Math.sin(ang);
-  for(let k=0;k<curPos.length;k+=2){
-    if(basePos[k+1]/imgH<0.389){
-      const dx=curPos[k]-hcx, dy=curPos[k+1]-hcy;
-      curPos[k]=hcx+dx*cosA-dy*sinA;
-      curPos[k+1]=hcy+dx*sinA+dy*cosA;
-    }
-  }
-
-  posF32.set(curPos);
-  gl.bindBuffer(gl.ARRAY_BUFFER,posBuf);
-  gl.bufferSubData(gl.ARRAY_BUFFER,0,posF32);
-}
-
-// ── Animation Updates ────────────────────────────────────────────────
-function updateBones(dt){
-  const vis=visemes[targetViseme]||visemes.rest;
-  const speed=isSpeaking?0.22:0.12;
-  for(const bone of bones){
-    if(bone.name==='blinkL'||bone.name==='blinkR'||bone.name==='browL'||bone.name==='browR') continue;
-    bone.target=vis[bone.name]||0;
-    bone.val+=(bone.target-bone.val)*speed;
-  }
-  boneMap.blinkL.val+=(boneMap.blinkL.target-boneMap.blinkL.val)*0.35;
-  boneMap.blinkR.val+=(boneMap.blinkR.target-boneMap.blinkR.val)*0.35;
-  boneMap.browL.val+=(boneMap.browL.target-boneMap.browL.val)*0.1;
-  boneMap.browR.val+=(boneMap.browR.target-boneMap.browR.val)*0.1;
-}
-
-function updateBlink(dt){
-  if(blinkPhase===0){
-    blinkTimer+=dt;
-    if(blinkTimer>=nextBlink){
-      blinkPhase=0.01; blinkTimer=0;
-      nextBlink=3+Math.random()*3;
-      // Switch to blinking pose for visible eye close
-      switchPoseFast('blinking');
-    }
-  } else {
-    blinkPhase+=dt*6;
-    boneMap.blinkL.target=blinkPhase<0.5?1:0;
-    boneMap.blinkR.target=blinkPhase<0.5?1:0;
-    if(blinkPhase>=1){
-      blinkPhase=0;
-      boneMap.blinkL.target=0;
-      boneMap.blinkR.target=0;
-      // Return from blink to previous pose
-      const returnPose = isSpeaking ? SPEAK_GESTURES[gestureIndex % SPEAK_GESTURES.length] : 'idle';
-      switchPoseFast(returnPose);
-    }
-  }
-}
-
-function updateGestures(dt){
-  if(!isSpeaking){
-    // Idle: switch between idle poses slowly
-    gestureTimer+=dt;
-    if(gestureTimer>=5){
-      gestureTimer=0;
-      gestureIndex=(gestureIndex+1)%IDLE_GESTURES.length;
-      switchPose(IDLE_GESTURES[gestureIndex]);
-    }
-    return;
-  }
-
-  // Speaking: rotate through gestures
-  gestureTimer+=dt;
-  if(gestureTimer>=GESTURE_INTERVAL){
-    gestureTimer=0;
-    gestureIndex=(gestureIndex+1)%SPEAK_GESTURES.length;
-    if(blinkPhase===0){ // don't interrupt blinks
-      switchPose(SPEAK_GESTURES[gestureIndex]);
-    }
-  }
-}
-
-function updateSpeaking(dt){
-  const ring=document.getElementById('speak-ring');
-  if(!isSpeaking){
-    targetViseme='rest';
-    ring.classList.remove('active');
-    boneMap.browL.target*=0.92;
-    boneMap.browR.target*=0.92;
-    return;
-  }
-  ring.classList.add('active');
-
-  charTimer+=dt;
-  if(charTimer>=1/CHARS_PER_SEC){
-    charTimer=0;
-    if(speakText && textIdx<speakText.length){
-      const ch=speakText[textIdx].toLowerCase();
-      targetViseme=charToViseme[ch]||'ss';
-      if(textIdx>0 && speakText[textIdx-1]===' '){
-        boneMap.browL.target=0.35+Math.random()*0.15;
-        boneMap.browR.target=0.35+Math.random()*0.15;
-      }
-      textIdx++;
+function updatePhysics(dt) {
+    // Blinking
+    let blinkVal = 0.0;
+    if(blinkPhase === 0) {
+        blinkTimer += dt;
+        if(blinkTimer >= nextBlink) { blinkPhase = 0.01; blinkTimer = 0; }
     } else {
-      const cycle=['aa','ss','ee','rest','oh','ss','aa','mm','ee','th'];
-      targetViseme=cycle[Math.floor(Date.now()/(1000/CHARS_PER_SEC))%cycle.length];
-      if(Math.random()<0.08){
-        boneMap.browL.target=0.25;
-        boneMap.browR.target=0.25;
-      }
+        blinkPhase += dt * 7;
+        blinkVal = (blinkPhase < 0.25) ? blinkPhase/0.25 : 
+                   (blinkPhase < 0.5) ? 1.0 : 1.0 - (blinkPhase-0.5)/0.5;
+        if(blinkPhase >= 1.0) { blinkPhase = 0; nextBlink = 2 + Math.random()*4; }
     }
-  }
-  boneMap.browL.target*=0.96;
-  boneMap.browR.target*=0.96;
+
+    // Speaking Lip Sync
+    let ring = document.getElementById('speak-ring');
+    if(!isSpeaking) {
+        targetJaw = 0;
+        targetArmL = 0; targetArmR = 0;
+        ring.classList.remove('active');
+    } else {
+        ring.classList.add('active');
+        charTimer += dt;
+        if(charTimer >= 1/CHARS_PER_SEC) {
+            charTimer = 0;
+            if(textIdx < speakText.length) {
+                let ch = speakText[textIdx].toLowerCase();
+                let v = charToViseme[ch] || 'ss';
+                targetJaw = visemes[v] || 0;
+                textIdx++;
+            } else {
+                targetJaw = visemes[['aa','mm','rest','oh'][Math.floor(time*4)%4]];
+            }
+        }
+        
+        // Random subtle gestures while speaking
+        if(Math.random() < 0.02) {
+            targetArmL = (Math.random() - 0.5) * 0.15;
+            targetArmR = (Math.random() - 0.5) * 0.15;
+        }
+    }
+
+    // Head state
+    if(currentState === 'thinking') targetHead = 0.08;
+    else if(currentState === 'listening') targetHead = Math.sin(time*2)*0.03;
+    else targetHead = Math.sin(time*0.8)*0.02; // idle sway
+
+    // Interpolate
+    valJaw += (targetJaw - valJaw) * 0.4;
+    valArmL += (targetArmL - valArmL) * 0.05;
+    valArmR += (targetArmR - valArmR) * 0.05;
+    valHead += (targetHead - valHead) * 0.05;
+
+    let breath = Math.sin(time * 1.5) * 0.005;
+
+    gl.uniform1f(u_blink, blinkVal);
+    gl.uniform1f(u_jaw_drop, valJaw);
+    gl.uniform1f(u_breath, breath);
+    gl.uniform1f(u_head_angle, valHead);
+    gl.uniform1f(u_armL_angle, valArmL);
+    gl.uniform1f(u_armR_angle, valArmR);
 }
 
-// ── Render Loop ──────────────────────────────────────────────────────
-function render(t){
-  const dt=Math.min((t-lastT)/1000, 0.05); lastT=t; time+=dt;
+let indexCount = 0;
+function render(t) {
+    const dt = Math.min((t - lastT)/1000, 0.05); lastT = t; time += dt;
+    
+    updatePhysics(dt);
 
-  // Update crossfade
-  if(blendValue<1) blendValue=Math.min(1, blendValue+blendSpeed);
+    gl.clearColor(0.047, 0.055, 0.149, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
 
-  updateBlink(dt);
-  updateGestures(dt);
-  updateSpeaking(dt);
-  updateBones(dt);
-  applyDeformations();
+    gl.uniform2f(u_res, gl.canvas.width, gl.canvas.height);
+    gl.uniform2f(u_off, offX, offY);
+    gl.uniform1f(u_scale, renderScale);
 
-  gl.clearColor(0.047,0.055,0.149,1);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-  gl.useProgram(program);
-
-  gl.uniform2f(u_res,gl.canvas.width,gl.canvas.height);
-  gl.uniform2f(u_off,offX,offY);
-  gl.uniform1f(u_scale,renderScale);
-
-  // Bind position
-  gl.bindBuffer(gl.ARRAY_BUFFER,posBuf);
-  gl.enableVertexAttribArray(a_pos);
-  gl.vertexAttribPointer(a_pos,2,gl.FLOAT,false,0,0);
-
-  // Bind UV
-  gl.bindBuffer(gl.ARRAY_BUFFER,uvBuf);
-  gl.enableVertexAttribArray(a_uv);
-  gl.vertexAttribPointer(a_uv,2,gl.FLOAT,false,0,0);
-
-  // Bind textures: current pose on unit 0, target pose on unit 1
-  const tex1 = textures[currentPose] || textures['idle'];
-  const tex2 = textures[targetPose] || textures['idle'];
-
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, tex1);
-  gl.uniform1i(u_tex1, 0);
-
-  gl.activeTexture(gl.TEXTURE1);
-  gl.bindTexture(gl.TEXTURE_2D, tex2);
-  gl.uniform1i(u_tex2, 1);
-
-  gl.uniform1f(u_blend, blendValue);
-
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,idxBuf);
-  gl.drawElements(gl.TRIANGLES,indices.length,gl.UNSIGNED_SHORT,0);
-
-  requestAnimationFrame(render);
+    gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0);
+    requestAnimationFrame(render);
 }
 
-// ── Public API ───────────────────────────────────────────────────────
 window.avatarAPI = {
-  setSpeaking(val){
-    const was = isSpeaking;
-    isSpeaking=!!val;
-    if(val && !was){
-      gestureTimer=0; gestureIndex=0;
-      switchPose(SPEAK_GESTURES[0]);
-    }
-    if(!val && was){
-      switchPose('idle');
-      gestureTimer=0; gestureIndex=0;
-    }
-  },
-  setText(text){ speakText=text; textIdx=0; charTimer=0; },
-  setState(state){ currentState=state; },
-  triggerBlink(){ if(blinkPhase===0){blinkPhase=0.01;blinkTimer=0;} },
-  setViseme(name){ targetViseme=name; },
+    setSpeaking: (val) => { isSpeaking = !!val; },
+    setText: (text) => { speakText = text; textIdx = 0; charTimer = 0; },
+    setState: (state) => { currentState = state; }
 };
 
-// ── Load All Pose Images ─────────────────────────────────────────────
-function loadAllPoses(){
-  let firstImg = null;
-  for(const [name, path] of Object.entries(POSE_PATHS)){
-    const img = new Image();
-    img.onload = function(){
-      if(!firstImg){
-        firstImg = img;
-        imgW = img.width; imgH = img.height;
-        createMesh(imgW, imgH);
-        if(!initGL()) return;
+const img = new Image();
+img.onload = () => {
+    imgW = img.width; imgH = img.height;
+    indexCount = initGL(img);
+    if(indexCount) {
         resize();
         window.addEventListener('resize', resize);
-      }
-      textures[name] = createTexture(img);
-      loadedCount++;
-      if(loadedCount >= totalToLoad){
-        // All loaded — start rendering
         requestAnimationFrame(render);
-      }
-    };
-    img.onerror = function(){
-      console.warn('Failed to load pose:', name, path);
-      loadedCount++;
-      if(loadedCount >= totalToLoad && Object.keys(textures).length > 0){
-        requestAnimationFrame(render);
-      }
-    };
-    img.src = path;
-  }
-}
-
-loadAllPoses();
+    }
+};
+img.src = imgPath;
 </script>
 </body>
 </html>
