@@ -54,7 +54,7 @@ uniform vec2 u_shoulderR;
 uniform float u_armL_angle;
 uniform float u_armR_angle;
 
-uniform vec2 u_jaw;
+uniform vec2 u_mouth_center;
 uniform float u_jaw_drop;
 uniform vec2 u_eyeL;
 uniform vec2 u_eyeR;
@@ -80,7 +80,7 @@ void main(){
         p.y -= u_breath * 400.0 * bW;
     }
 
-    // 2. Arm Gestures
+    // 2. Arm Gestures (Extended rotation and swing)
     float distL = distance(p, u_shoulderL);
     if(distL < 350.0 && p.x < u_head_center.x && p.y > u_shoulderL.y - 50.0) {
         float wL = clamp(1.0 - distL/350.0, 0.0, 1.0);
@@ -102,23 +102,30 @@ void main(){
         p = mix(p, rotateAround(p, u_head_center, u_head_angle), wH);
     }
 
-    // 4. Jaw / Lip Sync
-    float distJ = distance(p, u_jaw);
-    if(distJ < 100.0 && p.y > u_jaw.y - 30.0) {
-        float wJ = clamp(1.0 - distJ/100.0, 0.0, 1.0);
-        wJ = wJ * wJ * (3.0 - 2.0 * wJ);
-        p.y += u_jaw_drop * wJ;
+    // 4. Jaw / Lip Sync (Calibrated to Mouth Center at 393px Y)
+    float distM = distance(p, u_mouth_center);
+    if(distM < 90.0) {
+        float wM = clamp(1.0 - distM/90.0, 0.0, 1.0);
+        wM = smoothstep(0.0, 1.0, wM);
+        
+        if (p.y > u_mouth_center.y - 5.0) {
+            // Lower lip and chin drop
+            p.y += u_jaw_drop * wM;
+        } else {
+            // Upper lip moves slightly upward
+            p.y -= u_jaw_drop * 0.25 * wM;
+        }
     }
 
-    // 5. Blinking (Squash Y towards center of eyes)
+    // 5. Blinking (Squash Y towards center of eyes with wider radius)
     float distEL = distance(p, u_eyeL);
-    if(distEL < 40.0) {
-        float wE = clamp(1.0 - distEL/40.0, 0.0, 1.0);
+    if(distEL < 50.0) {
+        float wE = clamp(1.0 - distEL/50.0, 0.0, 1.0);
         p.y = mix(p.y, u_eyeL.y, wE * u_blink);
     }
     float distER = distance(p, u_eyeR);
-    if(distER < 40.0) {
-        float wE = clamp(1.0 - distER/40.0, 0.0, 1.0);
+    if(distER < 50.0) {
+        float wE = clamp(1.0 - distER/50.0, 0.0, 1.0);
         p.y = mix(p.y, u_eyeR.y, wE * u_blink);
     }
 
@@ -142,7 +149,7 @@ void main(){
 let gl, program;
 let u_res, u_off, u_scale, u_tex;
 let u_head_center, u_head_angle, u_shoulderL, u_shoulderR, u_armL_angle, u_armR_angle;
-let u_jaw, u_jaw_drop, u_eyeL, u_eyeR, u_blink, u_breath;
+let u_mouth_center, u_jaw_drop, u_eyeL, u_eyeR, u_blink, u_breath;
 
 let imgW = 896, imgH = 1200, renderScale = 1, offX = 0, offY = 0;
 let texture;
@@ -159,10 +166,10 @@ let targetArmR = 0, valArmR = 0;
 let targetJaw = 0, valJaw = 0;
 let targetHead = 0, valHead = 0;
 
-// Viseme mapping (jaw drop in pixels)
+// Viseme mapping (jaw drop in pixels - increased for highly visible movement)
 const visemes = {
-    'rest': 0, 'aa': 18, 'ee': 8, 'oh': 22, 'oo': 12,
-    'ff': 6, 'mm': 0, 'ss': 5, 'th': 10
+    'rest': 0, 'aa': 30, 'ee': 12, 'oh': 35, 'oo': 20,
+    'ff': 10, 'mm': 0, 'ss': 8, 'th': 15
 };
 const charToViseme = {
     'a':'aa','e':'ee','i':'ee','o':'oh','u':'oo',
@@ -242,7 +249,7 @@ function initGL(img) {
     u_shoulderR = gl.getUniformLocation(program, 'u_shoulderR');
     u_armL_angle = gl.getUniformLocation(program, 'u_armL_angle');
     u_armR_angle = gl.getUniformLocation(program, 'u_armR_angle');
-    u_jaw = gl.getUniformLocation(program, 'u_jaw');
+    u_mouth_center = gl.getUniformLocation(program, 'u_mouth_center');
     u_jaw_drop = gl.getUniformLocation(program, 'u_jaw_drop');
     u_eyeL = gl.getUniformLocation(program, 'u_eyeL');
     u_eyeR = gl.getUniformLocation(program, 'u_eyeR');
@@ -253,7 +260,7 @@ function initGL(img) {
     gl.uniform2f(u_head_center, 456, 356); // Nose
     gl.uniform2f(u_shoulderL, 313, 540);
     gl.uniform2f(u_shoulderR, 582, 540);
-    gl.uniform2f(u_jaw, 456, 437);
+    gl.uniform2f(u_mouth_center, 456, 393); // Corrected mouth center
     gl.uniform2f(u_eyeL, 419, 319);
     gl.uniform2f(u_eyeR, 493, 319);
 
@@ -284,11 +291,12 @@ function updatePhysics(dt) {
         if(blinkPhase >= 1.0) { blinkPhase = 0; nextBlink = 2 + Math.random()*4; }
     }
 
-    // Speaking Lip Sync
+    // Speaking Lip Sync & Dynamic Arm Gestures
     let ring = document.getElementById('speak-ring');
     if(!isSpeaking) {
         targetJaw = 0;
-        targetArmL = 0; targetArmR = 0;
+        targetArmL = 0.02 * Math.sin(time * 0.5); // very minor sway when silent
+        targetArmR = -0.02 * Math.sin(time * 0.5);
         ring.classList.remove('active');
     } else {
         ring.classList.add('active');
@@ -305,11 +313,9 @@ function updatePhysics(dt) {
             }
         }
         
-        // Random subtle gestures while speaking
-        if(Math.random() < 0.02) {
-            targetArmL = (Math.random() - 0.5) * 0.15;
-            targetArmR = (Math.random() - 0.5) * 0.15;
-        }
+        // Active hand gesturing while speaking (swinging arms)
+        targetArmL = 0.35 * Math.sin(time * 2.5); // raised gesture range up to 0.35 radians (20 degrees)
+        targetArmR = 0.35 * Math.cos(time * 2.0);
     }
 
     // Head state
@@ -318,10 +324,10 @@ function updatePhysics(dt) {
     else targetHead = Math.sin(time*0.8)*0.02; // idle sway
 
     // Interpolate
-    valJaw += (targetJaw - valJaw) * 0.4;
-    valArmL += (targetArmL - valArmL) * 0.05;
-    valArmR += (targetArmR - valArmR) * 0.05;
-    valHead += (targetHead - valHead) * 0.05;
+    valJaw += (targetJaw - valJaw) * 0.45;
+    valArmL += (targetArmL - valArmL) * 0.12;
+    valArmR += (targetArmR - valArmR) * 0.12;
+    valHead += (targetHead - valHead) * 0.08;
 
     let breath = Math.sin(time * 1.5) * 0.005;
 

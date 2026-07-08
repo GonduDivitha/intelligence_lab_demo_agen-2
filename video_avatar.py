@@ -5,9 +5,13 @@ from PySide6.QtWidgets import QWidget, QStackedLayout
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
 
 logger = logging.getLogger(__name__)
+
+class WebPage(QWebEnginePage):
+    def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+        logger.info(f"JS Console: {message} (line {lineNumber} of {sourceID})")
 
 class WebGLAvatar(QWebEngineView):
     """
@@ -16,26 +20,50 @@ class WebGLAvatar(QWebEngineView):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setPage(WebPage(self))
         self.settings().setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
         self.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
         self.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
         
         self.setStyleSheet("background: transparent;")
         
+        self._loaded = False
+        self._pending_speaking = False
+        self._pending_text = ""
+        self._pending_state = "idle"
+        
+        self.loadFinished.connect(self._on_load_finished)
+        
         html_path = os.path.join(os.path.dirname(__file__), "assets", "avatar_engine.html")
         self.load(QUrl.fromLocalFile(html_path))
 
+    def _on_load_finished(self, ok):
+        if ok:
+            logger.info("WebGLAvatar page loaded successfully.")
+            self._loaded = True
+            # Push buffered state
+            self.set_state(self._pending_state)
+            self.set_speaking_text(self._pending_text)
+            self.set_speaking(self._pending_speaking)
+        else:
+            logger.error("WebGLAvatar page failed to load.")
+
     def set_speaking(self, is_speaking: bool):
-        val = 'true' if is_speaking else 'false'
-        self.page().runJavaScript(f"if(window.avatarAPI) avatarAPI.setSpeaking({val});")
+        self._pending_speaking = is_speaking
+        if self._loaded:
+            val = 'true' if is_speaking else 'false'
+            self.page().runJavaScript(f"if(window.avatarAPI) avatarAPI.setSpeaking({val});")
 
     def set_speaking_text(self, text: str):
-        # Escape quotes
-        safe_text = text.replace("'", "\\'").replace('"', '\\"')
-        self.page().runJavaScript(f"if(window.avatarAPI) avatarAPI.setText('{safe_text}');")
+        self._pending_text = text
+        if self._loaded:
+            safe_text = text.replace("'", "\\'").replace('"', '\\"')
+            self.page().runJavaScript(f"if(window.avatarAPI) avatarAPI.setText('{safe_text}');")
 
     def set_state(self, state: str):
-        self.page().runJavaScript(f"if(window.avatarAPI) avatarAPI.setState('{state}');")
+        self._pending_state = state
+        if self._loaded:
+            self.page().runJavaScript(f"if(window.avatarAPI) avatarAPI.setState('{state}');")
 
 
 class VideoAvatar(QWidget):
