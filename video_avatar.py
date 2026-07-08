@@ -1,6 +1,7 @@
 import os
 import math
 import random
+import time
 import logging
 from PySide6.QtCore import Qt, QUrl, QTimer, QRect, QRectF
 from PySide6.QtWidgets import QWidget, QStackedLayout
@@ -40,36 +41,34 @@ VISEME_POSE = {
     'th':   'speaking',
 }
 
-# Timed visemes mapping
+# Timed visemes mapping (real-world milliseconds)
 def char_to_viseme_timed(ch):
     ch = ch.lower()
     mapping = {
-        'a': ('aa', 5), 'e': ('ee', 5), 'i': ('ee', 4), 'o': ('oh', 5), 'u': ('oo', 5),
-        'b': ('mm', 3), 'm': ('mm', 4), 'p': ('mm', 3),
-        'f': ('ff', 3), 'v': ('ff', 3),
-        's': ('ss', 3), 'z': ('ss', 3), 'c': ('ss', 3), 'x': ('ss', 3),
-        'w': ('oo', 4), 'r': ('oh', 3), 'q': ('oo', 3),
-        'd': ('th', 2), 't': ('th', 2), 'n': ('th', 3), 'l': ('th', 3),
-        'g': ('ss', 2), 'k': ('ss', 2), 'j': ('ee', 3), 'y': ('ee', 3), 'h': ('aa', 3),
-        ' ': ('rest', 4),
-        ',': ('rest', 8),
-        '.': ('rest', 12),
-        '!': ('rest', 12),
-        '?': ('rest', 12),
+        'a': ('aa', 100), 'e': ('ee', 90), 'i': ('ee', 80), 'o': ('oh', 100), 'u': ('oo', 100),
+        'b': ('mm', 60),  'm': ('mm', 70),  'p': ('mm', 60),
+        'f': ('ff', 60),  'v': ('ff', 60),
+        's': ('ss', 60),  'z': ('ss', 60),  'c': ('ss', 60),  'x': ('ss', 60),
+        'w': ('oo', 80),  'r': ('oh', 70),  'q': ('oo', 70),
+        'd': ('th', 50),  't': ('th', 50),  'n': ('th', 60),  'l': ('th', 60),
+        'g': ('ss', 50),  'k': ('ss', 50),  'j': ('ee', 70),  'y': ('ee', 70), 'h': ('aa', 70),
+        ' ': ('rest', 80),
+        ',': ('rest', 200),
+        '.': ('rest', 350), # Sentence boundaries
+        '!': ('rest', 350),
+        '?': ('rest', 350),
     }
-    return mapping.get(ch, ('ss', 3))
-
-# Body gesture rotation sequence
-SPEAK_GESTURES = ['speaking', 'both_hands', 'pointing', 'both_hands', 'speaking']
-GESTURE_INTERVAL = 140  # ~2.3 seconds
+    # Returns (viseme, duration_ms, is_sentence_boundary)
+    v, dur = mapping.get(ch, ('ss', 60))
+    is_boundary = ch in ('.', '!', '?')
+    return (v, dur, is_boundary)
 
 
 class FaceCompositingPresenter(QWidget):
     """
     Ultimate Hybrid 10/10 Presenter Engine.
-    Uses QPainter regional compositing with pixel-perfect alignment offsets.
-    Transitions are beautifully cross-faded to prevent flickering.
-    Grounded breathing removes any 'floating in water' feel.
+    Uses time-based lip sync (FPS independent) and event-driven gestures 
+    to prevent repetitive looping.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -90,21 +89,21 @@ class FaceCompositingPresenter(QWidget):
         self._prev_gesture = 'idle'
         self._curr_gesture = 'idle'
         self._body_blend = 1.0
-        self._body_blend_speed = 0.06  # ~300ms crossfade
+        self._body_blend_speed = 0.05  # Smooth crossfade
 
         self._prev_viseme = 'rest'
         self._curr_viseme = 'rest'
         self._mouth_blend = 1.0
-        self._mouth_blend_speed = 0.25 # ~80ms crossfade
+        self._mouth_blend_speed = 0.25 # Fast mouth crossfade
 
-        # ── Timed Lip Sync ──
+        # ── Time-based Lip Sync & Event-Driven Gestures ──
         self._viseme_queue = []
         self._viseme_idx = 0
-        self._viseme_countdown = 0
+        self._viseme_end_time = 0.0
 
-        # ── Gesture rotation ──
-        self._gesture_idx = 0
-        self._gesture_timer = 0
+        # Gesture timeline variables (seconds)
+        self._gesture_start_time = 0.0
+        self._gesture_state = "idle"  # "start", "mid", "rest"
 
         # ── Blink state ──
         self._blink_timer = 0
@@ -143,7 +142,6 @@ class FaceCompositingPresenter(QWidget):
 
     def _extract_aligned_region(self, pixmap, region, offset, feather_ratio=0.35):
         """Extract a face region with alignment offsets and feathering."""
-        # Align crop coordinates based on pose offset
         x = int(region[0] * pixmap.width()) + offset[0]
         y = int(region[1] * pixmap.height()) + offset[1]
         w = int(region[2] * pixmap.width())
@@ -151,7 +149,6 @@ class FaceCompositingPresenter(QWidget):
         
         cropped = pixmap.copy(x, y, w, h)
 
-        # Soft elliptical mask
         mask = QPixmap(w, h)
         mask.fill(Qt.transparent)
         mp = QPainter(mask)
@@ -191,20 +188,22 @@ class FaceCompositingPresenter(QWidget):
         was = self.is_speaking
         self.is_speaking = speaking
         if speaking and not was:
-            self._gesture_timer = 0
-            self._gesture_idx = 0
-            self._switch_gesture(SPEAK_GESTURES[0])
             self._viseme_idx = 0
-            self._viseme_countdown = 0
+            self._viseme_end_time = time.time()
+            # Start of speech: Point at slides or present with both hands
+            self._gesture_state = "start"
+            self._gesture_start_time = time.time()
+            self._switch_gesture(random.choice(['pointing', 'both_hands']))
         elif not speaking and was:
             self._viseme_queue = []
             self._switch_viseme('rest')
             self._switch_gesture('idle')
+            self._gesture_state = "idle"
 
     def set_speaking_text(self, text):
         self._viseme_queue = [char_to_viseme_timed(ch) for ch in text]
         self._viseme_idx = 0
-        self._viseme_countdown = 0
+        self._viseme_end_time = time.time()
 
     def set_state(self, state):
         self.state = state.lower()
@@ -225,9 +224,8 @@ class FaceCompositingPresenter(QWidget):
 
     def _tick(self):
         self.tick += 1
-        
-        # Grounded breathing (extremely subtle vertical bob, no sway/rotation!)
         self._breath += 0.035
+        current_time = time.time()
 
         # Advance crossfades
         if self._mouth_blend < 1.0:
@@ -235,28 +233,38 @@ class FaceCompositingPresenter(QWidget):
         if self._body_blend < 1.0:
             self._body_blend = min(1.0, self._body_blend + self._body_blend_speed)
 
-        # Timed lip sync
+        # ── Time-Based Lip Sync ──
         if self.is_speaking:
-            self._viseme_countdown -= 1
-            if self._viseme_countdown <= 0:
+            if current_time >= self._viseme_end_time:
                 if self._viseme_queue and self._viseme_idx < len(self._viseme_queue):
-                    viseme, delay = self._viseme_queue[self._viseme_idx]
+                    viseme, duration_ms, is_boundary = self._viseme_queue[self._viseme_idx]
                     self._switch_viseme(viseme)
-                    self._viseme_countdown = delay
+                    self._viseme_end_time = current_time + (duration_ms / 1000.0)
                     self._viseme_idx += 1
-                else:
-                    # Idle cycle while speaking is active but text is exhausted
-                    cycle = [('aa', 4), ('ss', 3), ('ee', 4), ('rest', 3), ('oh', 4)]
-                    idx = (self.tick // 4) % len(cycle)
-                    self._switch_viseme(cycle[idx][0])
-                    self._viseme_countdown = cycle[idx][1]
 
-            # Gesture rotation
-            self._gesture_timer += 1
-            if self._gesture_timer >= GESTURE_INTERVAL:
-                self._gesture_timer = 0
-                self._gesture_idx = (self._gesture_idx + 1) % len(SPEAK_GESTURES)
-                self._switch_gesture(SPEAK_GESTURES[self._gesture_idx])
+                    # Dynamic Event-Driven Gestures: 
+                    # Trigger a new arm gesture when we cross a sentence boundary
+                    if is_boundary and random.random() < 0.7:
+                        self._gesture_state = "start"
+                        self._gesture_start_time = current_time
+                        self._switch_gesture(random.choice(['pointing', 'both_hands']))
+                else:
+                    # Backup speaking loops if queue runs dry but audio is still playing
+                    cycle = [('aa', 100), ('ee', 90), ('oh', 100), ('rest', 80)]
+                    idx = int(current_time * 6) % len(cycle)
+                    self._switch_viseme(cycle[idx][0])
+                    self._viseme_end_time = current_time + (cycle[idx][1] / 1000.0)
+
+            # ── Event-Driven Gesture Timeline ──
+            elapsed_gesture = current_time - self._gesture_start_time
+            if self._gesture_state == "start" and elapsed_gesture >= 2.2:
+                # Transition to neutral speaking gesture after initial emphasis
+                self._gesture_state = "mid"
+                self._switch_gesture("speaking")
+            elif self._gesture_state == "mid" and elapsed_gesture >= 5.0:
+                # Relax to idle/listening body posture while still speaking
+                self._gesture_state = "rest"
+                self._switch_gesture("idle")
 
         # Eye blink
         if self._blink_phase == 0:
@@ -310,8 +318,8 @@ class FaceCompositingPresenter(QWidget):
         dx = (w - dw) // 2
         dy = (h - dh) // 2
 
-        # Grounded breathing (max 1.5px vertical shift, NO rotation, NO side sway)
-        bob = math.sin(self._breath) * 1.5
+        # Grounded breathing vertical bob (NO floaty side sway)
+        bob = math.sin(self._breath) * 1.2
 
         p.save()
         p.translate(0, bob)
@@ -327,7 +335,6 @@ class FaceCompositingPresenter(QWidget):
             p.drawPixmap(dx, dy, dw, dh, body_curr)
 
         # 2. Compute pixel-perfect mouth coordinates with pose offsets
-        # We blend the offset of prev pose and curr pose for smooth mouth track during crossfades!
         offset_curr = POSE_OFFSETS.get(self._curr_gesture, (0, 0))
         offset_prev = POSE_OFFSETS.get(self._prev_gesture, (0, 0))
         
@@ -375,16 +382,6 @@ class FaceCompositingPresenter(QWidget):
         glow.setColorAt(0.0, QColor(50, 80, 180, 25))
         glow.setColorAt(1.0, QColor(0, 0, 0, 0))
         p.fillRect(self.rect(), QBrush(glow))
-
-        # Speaking pulse
-        if self.is_speaking:
-            pulse = 0.5 + 0.5 * math.sin(self.tick * 0.08)
-            alpha = int(pulse * 40)
-            ring = QRadialGradient(w / 2, h * 0.45, min(w, h) * 0.44)
-            ring.setColorAt(0.88, QColor(80, 140, 255, 0))
-            ring.setColorAt(0.95, QColor(80, 140, 255, alpha))
-            ring.setColorAt(1.0, QColor(80, 140, 255, 0))
-            p.fillRect(self.rect(), QBrush(ring))
 
         p.end()
 
