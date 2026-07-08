@@ -12,52 +12,58 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 logger = logging.getLogger(__name__)
 
 # ── Face regions (normalized 0-1 on 896x1200 image) ──────────────────
-# Computed from face detection: face at (333,221,246,246)
-LOWER_FACE = (0.385, 0.275, 0.230, 0.130)   # x, y, w, h — nose to chin
-EYE_REGION = (0.390, 0.230, 0.220, 0.065)    # x, y, w, h — both eyes
+LOWER_FACE = (0.385, 0.275, 0.230, 0.130)
+EYE_REGION = (0.390, 0.230, 0.220, 0.065)
 
-# ── Viseme to source pose mapping ─────────────────────────────────────
+# ── Viseme → source pose ──────────────────────────────────────────────
 VISEME_POSE = {
-    'rest': 'idle',
-    'mm':   'mouth_closed',
-    'aa':   'mouth_wide',
-    'ee':   'speaking',
-    'oh':   'mouth_o',
-    'oo':   'mouth_o',
-    'ff':   'speaking',
-    'ss':   'both_hands',
+    'rest': 'idle',       'mm': 'mouth_closed',
+    'aa':   'mouth_wide', 'ee': 'speaking',
+    'oh':   'mouth_o',    'oo': 'mouth_o',
+    'ff':   'speaking',   'ss': 'both_hands',
     'th':   'speaking',
 }
 
-# Gesture rotation (body poses during speaking)
 SPEAK_GESTURES = ['speaking', 'both_hands', 'pointing', 'mouth_wide', 'mouth_o', 'speaking']
-GESTURE_INTERVAL = 150  # frames (~2.5s at 60fps)
+GESTURE_INTERVAL = 150
 
-# Phoneme mapping
-CHAR_VISEME = {
-    'a':'aa','e':'ee','i':'ee','o':'oh','u':'oo',
-    'b':'mm','m':'mm','p':'mm',
-    'f':'ff','v':'ff',
-    's':'ss','z':'ss','c':'ss','x':'ss',
-    'w':'oo','r':'oh','q':'oo',
-    'd':'th','t':'th','n':'th','l':'th',
-    'g':'ss','k':'ss','j':'ee','y':'ee','h':'aa',
-    ' ':'rest',',':'rest','.':'rest','!':'rest','?':'rest',
-}
+# Extended phoneme map with timing hints
+# Returns (viseme_name, frame_delay)
+# Longer delay = mouth stays in that shape longer (for vowels, pauses)
+# Shorter delay = quick consonant
+def char_to_viseme_timed(ch):
+    ch = ch.lower()
+    mapping = {
+        'a': ('aa', 5), 'e': ('ee', 5), 'i': ('ee', 4), 'o': ('oh', 5), 'u': ('oo', 5),
+        'b': ('mm', 3), 'm': ('mm', 4), 'p': ('mm', 3),
+        'f': ('ff', 3), 'v': ('ff', 3),
+        's': ('ss', 3), 'z': ('ss', 3), 'c': ('ss', 3), 'x': ('ss', 3),
+        'w': ('oo', 4), 'r': ('oh', 3), 'q': ('oo', 3),
+        'd': ('th', 2), 't': ('th', 2), 'n': ('th', 3), 'l': ('th', 3),
+        'g': ('ss', 2), 'k': ('ss', 2), 'j': ('ee', 3), 'y': ('ee', 3), 'h': ('aa', 3),
+        ' ': ('rest', 4),  # brief pause between words
+        ',': ('rest', 8),  # medium pause at comma
+        '.': ('rest', 12), # long pause at period
+        '!': ('rest', 12), '?': ('rest', 12),
+        ':': ('rest', 8), ';': ('rest', 8),
+        '-': ('rest', 3), '\n': ('rest', 6),
+    }
+    return mapping.get(ch, ('ss', 3))
 
 
 class FaceCompositingPresenter(QWidget):
     """
-    Regional Face Compositing Avatar Engine.
+    Regional Face Compositing Avatar Engine with Smooth Crossfade.
 
-    Instead of subtle mesh deformation or image switching, this engine:
-    1. Draws the full body pose (gesture rotation every ~2.5s)
-    2. COMPOSITES the mouth region from the matching viseme pose ON TOP
-       (using elliptical feather mask for seamless blending)
-    3. COMPOSITES the eye region from the blink pose during blinks
+    Architecture:
+      Layer 1 — Full body pose (smooth crossfade between gesture poses)
+      Layer 2 — Mouth region (smooth crossfade between viseme mouth sprites)
+      Layer 3 — Eye region (smooth alpha blink from closed-eye Pixar render)
+      Layer 4 — Physics (breathing, head sway, bob)
+      Layer 5 — VFX (ambient glow, speaking pulse, cinematic letterbox)
 
-    Result: clearly visible lip movement, eye blinks, and gesture changes
-    because each face region comes from a completely different Pixar render.
+    Key improvement: ALL transitions use smooth opacity crossfade,
+    not hard cuts. This creates fluid, natural animation.
     """
 
     def __init__(self, parent=None):
@@ -68,38 +74,50 @@ class FaceCompositingPresenter(QWidget):
         self.is_speaking = False
         self.state = 'idle'
 
-        # Load all pose images
+        # Load pose images
         self.poses = {}
         self._load_poses()
 
-        # ── Pre-compute face region sprites ──
+        # Pre-compute sprites
         self.mouth_sprites = {}
         self.blink_sprite = None
         self._precompute_sprites()
 
-        # ── Viseme lip sync state ──
-        self._viseme_seq = []
+        # ── SMOOTH MOUTH CROSSFADE ──
+        self._prev_viseme = 'rest'
+        self._curr_viseme = 'rest'
+        self._mouth_blend = 1.0       # 0.0 = showing prev, 1.0 = showing curr
+        self._mouth_blend_speed = 0.3  # fast blend for mouth (~100ms)
+
+        # ── SMOOTH BODY CROSSFADE ──
+        self._prev_gesture = 'idle'
+        self._curr_gesture = 'idle'
+        self._body_blend = 1.0
+        self._body_blend_speed = 0.05  # slower blend for body (~300ms)
+
+        # ── Timed viseme sequence ──
+        self._viseme_queue = []        # list of (viseme, delay_frames)
         self._viseme_idx = 0
-        self._viseme_timer = 0
-        self._chars_per_sec = 13
-        self._current_viseme = 'rest'
+        self._viseme_countdown = 0     # frames until next viseme
 
         # ── Gesture rotation ──
         self._gesture_idx = 0
         self._gesture_timer = 0
-        self._current_gesture = 'idle'
 
-        # ── Blink state ──
+        # ── Blink ──
         self._blink_timer = 0
         self._next_blink = random.randint(180, 330)
-        self._blink_alpha = 0.0   # 0=eyes open, 1=eyes closed
-        self._blink_phase = 0     # 0=not blinking, >0=blinking
+        self._blink_alpha = 0.0
+        self._blink_phase = 0
 
         # ── Physics ──
         self._breath = 0.0
         self._sway = 0.0
 
-        # 60 FPS
+        # ── Speaking emphasis (eyebrow) ──
+        self._emphasis = 0.0    # subtle upward shift on emphasis
+
+        # 60 FPS timer
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)
@@ -126,16 +144,12 @@ class FaceCompositingPresenter(QWidget):
                     self.poses["idle"] = px
 
     def _extract_feathered_region(self, pixmap, region, feather_ratio=0.35):
-        """Extract a face region with soft elliptical feathering for seamless compositing."""
         x = int(region[0] * pixmap.width())
         y = int(region[1] * pixmap.height())
         w = int(region[2] * pixmap.width())
         h = int(region[3] * pixmap.height())
-
-        # Crop region
         cropped = pixmap.copy(x, y, w, h)
 
-        # Create elliptical feather mask
         mask = QPixmap(w, h)
         mask.fill(Qt.transparent)
         mp = QPainter(mask)
@@ -149,7 +163,6 @@ class FaceCompositingPresenter(QWidget):
         mp.drawEllipse(0, 0, w, h)
         mp.end()
 
-        # Apply mask via composition
         result = QPixmap(w, h)
         result.fill(Qt.transparent)
         rp = QPainter(result)
@@ -157,21 +170,16 @@ class FaceCompositingPresenter(QWidget):
         rp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
         rp.drawPixmap(0, 0, mask)
         rp.end()
-
         return result
 
     def _precompute_sprites(self):
-        """Pre-extract all mouth and eye region sprites at startup."""
         for viseme, pose_name in VISEME_POSE.items():
             if pose_name in self.poses:
                 self.mouth_sprites[viseme] = self._extract_feathered_region(
                     self.poses[pose_name], LOWER_FACE, feather_ratio=0.30)
-                logger.info(f"Pre-computed mouth sprite: {viseme} from {pose_name}")
-
         if 'blinking' in self.poses:
             self.blink_sprite = self._extract_feathered_region(
                 self.poses['blinking'], EYE_REGION, feather_ratio=0.35)
-            logger.info("Pre-computed blink eye sprite")
 
     # ── Public API ──────────────────────────────────────────────────
     def set_speaking(self, speaking):
@@ -180,21 +188,41 @@ class FaceCompositingPresenter(QWidget):
         if speaking and not was:
             self._gesture_timer = 0
             self._gesture_idx = 0
-            self._current_gesture = SPEAK_GESTURES[0]
+            self._switch_gesture(SPEAK_GESTURES[0])
             self._viseme_idx = 0
-            self._viseme_timer = 0
+            self._viseme_countdown = 0
         elif not speaking and was:
-            self._viseme_seq = []
-            self._current_viseme = 'rest'
-            self._current_gesture = 'idle'
+            self._viseme_queue = []
+            self._switch_viseme('rest')
+            self._switch_gesture('idle')
 
     def set_speaking_text(self, text):
-        self._viseme_seq = [CHAR_VISEME.get(ch.lower(), 'ss') for ch in text]
+        """Convert text to a timed viseme sequence for synchronized lip movement."""
+        self._viseme_queue = [char_to_viseme_timed(ch) for ch in text]
         self._viseme_idx = 0
-        self._viseme_timer = 0
+        self._viseme_countdown = 0
 
     def set_state(self, state):
         self.state = state.lower()
+
+    # ── Smooth transition helpers ───────────────────────────────────
+    def _switch_viseme(self, new_viseme):
+        """Start a smooth crossfade to a new mouth shape."""
+        if new_viseme == self._curr_viseme:
+            return
+        self._prev_viseme = self._curr_viseme
+        self._curr_viseme = new_viseme
+        self._mouth_blend = 0.0
+
+    def _switch_gesture(self, new_gesture):
+        """Start a smooth crossfade to a new body pose."""
+        if new_gesture == self._curr_gesture:
+            return
+        if new_gesture not in self.poses:
+            return
+        self._prev_gesture = self._curr_gesture
+        self._curr_gesture = new_gesture
+        self._body_blend = 0.0
 
     # ── Animation loop ──────────────────────────────────────────────
     def _tick(self):
@@ -202,25 +230,45 @@ class FaceCompositingPresenter(QWidget):
         self._breath += 0.045
         self._sway += 0.025
 
-        # ── Lip sync ──
+        # ── Advance crossfade blends ──
+        if self._mouth_blend < 1.0:
+            self._mouth_blend = min(1.0, self._mouth_blend + self._mouth_blend_speed)
+        if self._body_blend < 1.0:
+            self._body_blend = min(1.0, self._body_blend + self._body_blend_speed)
+
+        # ── Lip sync with variable timing ──
         if self.is_speaking:
-            self._viseme_timer += 1
-            frames_per_char = max(2, int(60 / self._chars_per_sec))
-            if self._viseme_timer >= frames_per_char:
-                self._viseme_timer = 0
-                if self._viseme_seq and self._viseme_idx < len(self._viseme_seq):
-                    self._current_viseme = self._viseme_seq[self._viseme_idx]
+            self._viseme_countdown -= 1
+            if self._viseme_countdown <= 0:
+                if self._viseme_queue and self._viseme_idx < len(self._viseme_queue):
+                    viseme, delay = self._viseme_queue[self._viseme_idx]
+                    self._switch_viseme(viseme)
+                    self._viseme_countdown = delay
                     self._viseme_idx += 1
+                    # Emphasis on word starts (after space/punctuation)
+                    if self._viseme_idx > 1:
+                        prev_v = self._viseme_queue[self._viseme_idx - 2][0]
+                        if prev_v == 'rest':
+                            self._emphasis = 2.0  # pixel shift for emphasis
                 else:
-                    cycle = ['aa', 'ss', 'ee', 'rest', 'oh', 'ss', 'aa', 'mm', 'ee', 'th']
-                    self._current_viseme = cycle[self.tick // frames_per_char % len(cycle)]
+                    # Auto-cycle when no queued text
+                    cycle = [('aa', 4), ('ss', 3), ('ee', 4), ('rest', 3),
+                             ('oh', 4), ('ss', 3), ('aa', 4), ('mm', 3),
+                             ('ee', 4), ('th', 3)]
+                    idx = self.tick % len(cycle)
+                    v, d = cycle[idx]
+                    self._switch_viseme(v)
+                    self._viseme_countdown = d
 
             # Gesture rotation
             self._gesture_timer += 1
             if self._gesture_timer >= GESTURE_INTERVAL:
                 self._gesture_timer = 0
                 self._gesture_idx = (self._gesture_idx + 1) % len(SPEAK_GESTURES)
-                self._current_gesture = SPEAK_GESTURES[self._gesture_idx]
+                self._switch_gesture(SPEAK_GESTURES[self._gesture_idx])
+
+        # ── Emphasis decay ──
+        self._emphasis *= 0.90
 
         # ── Blink ──
         if self._blink_phase == 0:
@@ -231,12 +279,12 @@ class FaceCompositingPresenter(QWidget):
                 self._next_blink = random.randint(180, 330)
         else:
             self._blink_phase += 1
-            if self._blink_phase <= 5:
-                self._blink_alpha = min(1.0, self._blink_alpha + 0.25)
-            elif self._blink_phase <= 9:
+            if self._blink_phase <= 4:
+                self._blink_alpha = min(1.0, self._blink_alpha + 0.30)
+            elif self._blink_phase <= 8:
                 self._blink_alpha = 1.0
-            elif self._blink_phase <= 15:
-                self._blink_alpha = max(0.0, self._blink_alpha - 0.2)
+            elif self._blink_phase <= 14:
+                self._blink_alpha = max(0.0, self._blink_alpha - 0.20)
             else:
                 self._blink_phase = 0
                 self._blink_alpha = 0.0
@@ -250,7 +298,7 @@ class FaceCompositingPresenter(QWidget):
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
         w, h = self.width(), self.height()
 
-        # 1. Dark cinematic background
+        # Background
         bg = QLinearGradient(0, 0, 0, h)
         bg.setColorAt(0.0, QColor(12, 14, 38))
         bg.setColorAt(1.0, QColor(4, 6, 16))
@@ -263,14 +311,15 @@ class FaceCompositingPresenter(QWidget):
             p.end()
             return
 
-        # 2. Get body pose
-        body = self.poses.get(self._current_gesture, self.poses.get('idle'))
-        if body is None:
+        # Get body pose pixmaps
+        body_curr = self.poses.get(self._curr_gesture, self.poses.get('idle'))
+        body_prev = self.poses.get(self._prev_gesture, body_curr)
+        if body_curr is None:
             p.end()
             return
 
-        # 3. Compute display rect (fit to widget)
-        aspect = body.width() / body.height()
+        # Compute display rect
+        aspect = body_curr.width() / body_curr.height()
         if w / h > aspect:
             dh = h; dw = int(h * aspect)
         else:
@@ -278,7 +327,7 @@ class FaceCompositingPresenter(QWidget):
         dx = (w - dw) // 2
         dy = (h - dh) // 2
 
-        # 4. Apply breathing/sway transform
+        # Physics
         breath = math.sin(self._breath)
         sway = math.sin(self._sway)
         sc = 1.0 + breath * 0.003
@@ -291,19 +340,35 @@ class FaceCompositingPresenter(QWidget):
         p.scale(sc, sc)
         p.translate(-w / 2, -h / 2)
 
-        # 5. Draw full body pose
-        p.drawPixmap(dx, dy, dw, dh, body)
+        # ─── LAYER 1: Body pose with smooth crossfade ──────────────
+        if self._body_blend < 0.99:
+            p.setOpacity(1.0 - self._body_blend)
+            p.drawPixmap(dx, dy, dw, dh, body_prev)
+            p.setOpacity(self._body_blend)
+            p.drawPixmap(dx, dy, dw, dh, body_curr)
+            p.setOpacity(1.0)
+        else:
+            p.drawPixmap(dx, dy, dw, dh, body_curr)
 
-        # 6. COMPOSITE mouth region from current viseme pose
-        mouth = self.mouth_sprites.get(self._current_viseme)
-        if mouth:
-            mx = dx + int(LOWER_FACE[0] * dw)
-            my = dy + int(LOWER_FACE[1] * dh)
-            mw = int(LOWER_FACE[2] * dw)
-            mh = int(LOWER_FACE[3] * dh)
-            p.drawPixmap(mx, my, mw, mh, mouth)
+        # ─── LAYER 2: Mouth with smooth crossfade ─────────────────
+        mouth_prev = self.mouth_sprites.get(self._prev_viseme)
+        mouth_curr = self.mouth_sprites.get(self._curr_viseme)
+        mx = dx + int(LOWER_FACE[0] * dw)
+        my = dy + int(LOWER_FACE[1] * dh) - int(self._emphasis)
+        mw = int(LOWER_FACE[2] * dw)
+        mh = int(LOWER_FACE[3] * dh)
 
-        # 7. COMPOSITE blink eyes
+        if self._mouth_blend < 0.99 and mouth_prev and mouth_curr:
+            # Smooth crossfade between two mouth shapes
+            p.setOpacity(1.0 - self._mouth_blend)
+            p.drawPixmap(mx, my, mw, mh, mouth_prev)
+            p.setOpacity(self._mouth_blend)
+            p.drawPixmap(mx, my, mw, mh, mouth_curr)
+            p.setOpacity(1.0)
+        elif mouth_curr:
+            p.drawPixmap(mx, my, mw, mh, mouth_curr)
+
+        # ─── LAYER 3: Eye blink ───────────────────────────────────
         if self._blink_alpha > 0.01 and self.blink_sprite:
             p.setOpacity(self._blink_alpha)
             ex = dx + int(EYE_REGION[0] * dw)
@@ -315,31 +380,31 @@ class FaceCompositingPresenter(QWidget):
 
         p.restore()
 
-        # 8. Ambient glow
+        # ─── LAYER 4: Ambient glow ───────────────────────────────
         glow = QRadialGradient(w / 2, h * 0.43, w * 0.45)
         glow.setColorAt(0.0, QColor(50, 80, 180, 25))
         glow.setColorAt(1.0, QColor(0, 0, 0, 0))
         p.fillRect(self.rect(), QBrush(glow))
 
-        # 9. Speaking pulse ring
+        # ─── LAYER 5: Speaking pulse ring ─────────────────────────
         if self.is_speaking:
             pulse = 0.5 + 0.5 * math.sin(self.tick * 0.08)
-            alpha = int(pulse * 50)
+            alpha = int(pulse * 45)
             ring = QRadialGradient(w / 2, h * 0.45, min(w, h) * 0.44)
             ring.setColorAt(0.88, QColor(80, 140, 255, 0))
             ring.setColorAt(0.95, QColor(80, 140, 255, alpha))
             ring.setColorAt(1.0, QColor(80, 140, 255, 0))
             p.fillRect(self.rect(), QBrush(ring))
 
-        # 10. Cinematic letterbox
-        tf = QLinearGradient(0, 0, 0, 25)
-        tf.setColorAt(0, QColor(12, 14, 38, 180))
-        tf.setColorAt(1, QColor(12, 14, 38, 0))
-        p.fillRect(0, 0, w, 25, tf)
-        bf = QLinearGradient(0, h - 25, 0, h)
-        bf.setColorAt(0, QColor(4, 6, 16, 0))
-        bf.setColorAt(1, QColor(4, 6, 16, 180))
-        p.fillRect(0, h - 25, w, 25, bf)
+        # ─── LAYER 6: Cinematic letterbox ─────────────────────────
+        tb = QLinearGradient(0, 0, 0, 20)
+        tb.setColorAt(0, QColor(12, 14, 38, 160))
+        tb.setColorAt(1, QColor(12, 14, 38, 0))
+        p.fillRect(0, 0, w, 20, tb)
+        bb = QLinearGradient(0, h - 20, 0, h)
+        bb.setColorAt(0, QColor(4, 6, 16, 0))
+        bb.setColorAt(1, QColor(4, 6, 16, 160))
+        p.fillRect(0, h - 20, w, 20, bb)
 
         p.end()
 
@@ -348,8 +413,7 @@ class VideoAvatar(QWidget):
     """
     Digital Human presenter component.
     Priority 1: Plays H.264 MP4 videos from assets/videos/.
-    Priority 2: Face-compositing presenter with visible lip sync,
-                 eye blinks, and gesture changes.
+    Priority 2: Face-compositing presenter with smooth crossfade animation.
     """
 
     def __init__(self, parent=None):
