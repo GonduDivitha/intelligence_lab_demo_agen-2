@@ -1022,6 +1022,9 @@ class MainWindow(QMainWindow):
                 self.start_btn.setText("🚀 Start Presenter")
 
     def on_text_to_speak(self, text: str, token: str, language: str):
+        # Feed text to avatar for phoneme-synced lip movement
+        if hasattr(self.avatar, 'set_speaking_text'):
+            self.avatar.set_speaking_text(text)
         self.tts.speak(text, token, language)
 
     def on_speaking_state_changed(self, is_speaking: bool):
