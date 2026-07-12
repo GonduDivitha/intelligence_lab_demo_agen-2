@@ -89,8 +89,8 @@ class LLMBrain:
 
     def _call_gemini(self, prompt: str, system: str = None) -> str:
         try:
-            # Using v1beta endpoint and gemini-1.5-flash model
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.gemini_key}"
+            # Using v1beta endpoint and gemini-2.5-flash model
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.gemini_key}"
             full_prompt = f"{system or SYSTEM_PROMPT}\n\nUser: {prompt}"
             payload = {
                 "contents": [
