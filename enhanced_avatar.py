@@ -19,6 +19,8 @@ from PySide6.QtWidgets import QWidget
 # Timed visemes mapping (real-world milliseconds) to EnhancedAvatar mouth shape indices (0-5, or -1)
 def char_to_viseme_timed(ch):
     ch = ch.lower()
+    
+    # ── English Mapping ──
     mapping = {
         'a': (3, 70),   # 'aa' shape (wide)
         'e': (5, 60),   # 'ee' shape (smile)
@@ -52,9 +54,31 @@ def char_to_viseme_timed(ch):
         '!': (0, 200),
         '?': (0, 200),
     }
-    v, dur = mapping.get(ch, (1, 45))
-    is_boundary = ch in ('.', '!', '?')
-    return (v, dur, is_boundary)
+    
+    if ch in mapping:
+        v, dur = mapping[ch]
+        is_boundary = ch in ('.', '!', '?')
+        return (v, dur, is_boundary)
+        
+    # ── Multilingual Hindi & Telugu Phonetic Mapping ──
+    # 1. Labials (Mouth closed): प, फ, ब, भ, म, ప, ఫ, బ, భ, మ
+    if ch in ('प', 'फ', 'ब', 'भ', 'म', 'ప', 'ఫ', 'బ', 'భ', 'మ'):
+        return (0, 50, False)
+        
+    # 2. Wide / Rounded Vowels: अ, आ, ओ, औ, ा, ो, ौ, అ, ఆ, ఒ, ఓ, ఔ, ా, ొ, ో, ౌ
+    if ch in ('अ', 'आ', 'ओ', 'औ', 'ा', 'ो', 'ौ', 'అ', 'ఆ', 'ఒ', 'ఓ', 'ఔ', 'ా', 'ొ', 'ో', 'ౌ'):
+        return (3, 70, False)
+        
+    # 3. Smile Vowels: इ, ई, ए, ऐ, ि, ी, े, ै, ఇ, ఈ, ఎ, ఏ, ఐ, ి, ీ, ె, ే, ై
+    if ch in ('इ', 'ई', 'ए', 'ऐ', 'ि', 'ी', 'े', 'ै', 'ఇ', 'ఈ', 'ఎ', 'ఏ', 'ఐ', 'ి', 'ీ', 'ె', 'ే', 'ై'):
+        return (5, 60, False)
+        
+    # 4. Sentence boundaries
+    if ch in ('।', '|', '.', '!', '?'):
+        return (0, 200, True)
+        
+    # Default slightly open consonant
+    return (1, 45, False)
 
 
 STATES = [
