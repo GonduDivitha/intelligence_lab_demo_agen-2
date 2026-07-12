@@ -7,6 +7,7 @@ gestures, expressions, and breathing animation using PySide6.
 
 import math
 import random
+import time
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, QPointF, QRectF
 from PySide6.QtGui import (
@@ -14,6 +15,47 @@ from PySide6.QtGui import (
     QRadialGradient, QPainterPath, QConicalGradient
 )
 from PySide6.QtWidgets import QWidget
+
+# Timed visemes mapping (real-world milliseconds) to EnhancedAvatar mouth shape indices (0-5, or -1)
+def char_to_viseme_timed(ch):
+    ch = ch.lower()
+    mapping = {
+        'a': (3, 100),  # 'aa' shape (wide)
+        'e': (5, 90),   # 'ee' shape (smile)
+        'i': (5, 80),   # 'ee' shape (smile)
+        'o': (4, 100),  # 'oh' shape (O shape)
+        'u': (4, 100),  # 'oh' shape (O shape)
+        'b': (0, 60),   # 'mm' shape (closed)
+        'm': (0, 70),   # 'mm' shape (closed)
+        'p': (0, 60),   # 'mm' shape (closed)
+        'f': (1, 60),   # 'ff' shape (slightly open)
+        'v': (1, 60),
+        's': (1, 60),   # 'ss' shape (slightly open)
+        'z': (1, 60),
+        'c': (1, 60),
+        'x': (1, 60),
+        'w': (4, 80),   # 'oo' shape (O shape)
+        'r': (4, 70),
+        'q': (4, 70),
+        'd': (1, 50),   # 'th' shape (slightly open)
+        't': (1, 50),
+        'n': (1, 60),
+        'l': (1, 60),
+        'g': (1, 50),
+        'k': (1, 50),
+        'j': (5, 70),
+        'y': (5, 70),
+        'h': (3, 70),
+        ' ': (0, 80),   # rest
+        ',': (0, 200),
+        '.': (0, 350),  # boundaries
+        '!': (0, 350),
+        '?': (0, 350),
+    }
+    v, dur = mapping.get(ch, (1, 60))
+    is_boundary = ch in ('.', '!', '?')
+    return (v, dur, is_boundary)
+
 
 STATES = [
     'hidden', 'greeting', 'listening', 'thinking',
@@ -59,10 +101,16 @@ class EnhancedAvatar(QWidget):
         self.visible_agent = False
         self.tick = 0
 
-        # Speaking / lip-sync
+        # Speaking / lip-sync (time-based)
         self._is_speaking = False
         self._mouth_shape_index = 0
-        self._mouth_timer = 0
+        self._viseme_queue = []
+        self._viseme_idx = 0
+        self._viseme_end_time = 0.0
+
+        # Gesture timeline variables (seconds)
+        self._gesture_state = "idle"  # "start", "mid", "rest"
+        self._gesture_start_time = 0.0
 
         # Animation phases
         self._gesture_phase = 0.0
@@ -122,7 +170,25 @@ class EnhancedAvatar(QWidget):
 
     def set_speaking(self, is_speaking: bool):
         """Enable / disable lip-sync animation."""
+        was = self._is_speaking
         self._is_speaking = is_speaking
+        if is_speaking and not was:
+            self._viseme_idx = 0
+            self._viseme_end_time = time.time()
+            self._gesture_state = "start"
+            self._gesture_start_time = time.time()
+            self.set_state('presenting')
+        elif not is_speaking and was:
+            self._viseme_queue = []
+            self._mouth_shape_index = 0
+            self.set_state('idle')
+            self._gesture_state = "idle"
+
+    def set_speaking_text(self, text: str):
+        """Convert text into a timed viseme queue."""
+        self._viseme_queue = [char_to_viseme_timed(ch) for ch in text]
+        self._viseme_idx = 0
+        self._viseme_end_time = time.time()
 
     def set_visitor_position(self, rel_x: float, rel_y: float):
         """Set the target tracking coordinates of the visitor."""
@@ -141,11 +207,36 @@ class EnhancedAvatar(QWidget):
         # Gesture
         self._gesture_phase += 0.03
 
-        # Lip sync
+        # Time-based Lip Sync
+        current_time = time.time()
         if self._is_speaking:
-            self._mouth_timer += 1
-            if self._mouth_timer % 3 == 0:
-                self._mouth_shape_index = (self._mouth_shape_index + 1) % 6
+            if current_time >= self._viseme_end_time:
+                if self._viseme_queue and self._viseme_idx < len(self._viseme_queue):
+                    shape_idx, duration_ms, is_boundary = self._viseme_queue[self._viseme_idx]
+                    self._mouth_shape_index = shape_idx
+                    self._viseme_end_time = current_time + (duration_ms / 1000.0)
+                    self._viseme_idx += 1
+
+                    # Trigger dynamic state changes on sentence boundaries
+                    if is_boundary and random.random() < 0.7:
+                        self._gesture_state = "start"
+                        self._gesture_start_time = current_time
+                        self.set_state(random.choice(['presenting', 'speaking']))
+                else:
+                    # Backup speaking loop when queue runs dry
+                    cycle = [(3, 100), (5, 90), (4, 100), (0, 80)]
+                    idx = int(current_time * 6) % len(cycle)
+                    self._mouth_shape_index = cycle[idx][0]
+                    self._viseme_end_time = current_time + (cycle[idx][1] / 1000.0)
+
+            # Event-driven gestures
+            elapsed_gesture = current_time - self._gesture_start_time
+            if self._gesture_state == "start" and elapsed_gesture >= 2.2:
+                self._gesture_state = "mid"
+                self.set_state("speaking")
+            elif self._gesture_state == "mid" and elapsed_gesture >= 5.0:
+                self._gesture_state = "rest"
+                self.set_state("idle")
         else:
             self._mouth_shape_index = 0
 

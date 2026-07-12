@@ -9,6 +9,7 @@ from PySide6.QtGui import (QPixmap, QImage, QFont, QColor, QPainter,
                            QLinearGradient, QRadialGradient, QBrush, QPen)
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
+from enhanced_avatar import EnhancedAvatar
 
 logger = logging.getLogger(__name__)
 
@@ -403,8 +404,8 @@ class VideoAvatar(QWidget):
         self.video_widget.setStyleSheet("background:#000;border-radius:12px;")
         self.stacked_layout.addWidget(self.video_widget)
 
-        # Index 1 — Pixel-perfect Regional Face Compositing Presenter
-        self.presenter = FaceCompositingPresenter()
+        # Index 1 — Enhanced procedural vector avatar
+        self.presenter = EnhancedAvatar()
         self.stacked_layout.addWidget(self.presenter)
 
         # Media player
@@ -434,7 +435,10 @@ class VideoAvatar(QWidget):
         self.current_media_path = ""
 
     def pop_out(self):
-        self.set_state("greeting")
+        if hasattr(self.presenter, 'pop_out'):
+            self.presenter.pop_out()
+        else:
+            self.set_state("greeting")
 
     def set_speaking(self, is_speaking: bool):
         self.is_speaking = is_speaking
@@ -445,7 +449,8 @@ class VideoAvatar(QWidget):
         self.presenter.set_speaking_text(text)
 
     def set_visitor_position(self, rel_x: float, rel_y: float):
-        pass
+        if hasattr(self.presenter, 'set_visitor_position'):
+            self.presenter.set_visitor_position(rel_x, rel_y)
 
     def set_state(self, state: str, slide_index: int = 0):
         self.current_state = state.lower()
