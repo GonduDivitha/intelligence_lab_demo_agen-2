@@ -20,39 +20,39 @@ from PySide6.QtWidgets import QWidget
 def char_to_viseme_timed(ch):
     ch = ch.lower()
     mapping = {
-        'a': (3, 100),  # 'aa' shape (wide)
-        'e': (5, 90),   # 'ee' shape (smile)
-        'i': (5, 80),   # 'ee' shape (smile)
-        'o': (4, 100),  # 'oh' shape (O shape)
-        'u': (4, 100),  # 'oh' shape (O shape)
-        'b': (0, 60),   # 'mm' shape (closed)
-        'm': (0, 70),   # 'mm' shape (closed)
-        'p': (0, 60),   # 'mm' shape (closed)
-        'f': (1, 60),   # 'ff' shape (slightly open)
-        'v': (1, 60),
-        's': (1, 60),   # 'ss' shape (slightly open)
-        'z': (1, 60),
-        'c': (1, 60),
-        'x': (1, 60),
-        'w': (4, 80),   # 'oo' shape (O shape)
-        'r': (4, 70),
-        'q': (4, 70),
-        'd': (1, 50),   # 'th' shape (slightly open)
-        't': (1, 50),
-        'n': (1, 60),
-        'l': (1, 60),
-        'g': (1, 50),
-        'k': (1, 50),
-        'j': (5, 70),
-        'y': (5, 70),
-        'h': (3, 70),
-        ' ': (0, 80),   # rest
-        ',': (0, 200),
-        '.': (0, 350),  # boundaries
-        '!': (0, 350),
-        '?': (0, 350),
+        'a': (3, 70),   # 'aa' shape (wide)
+        'e': (5, 60),   # 'ee' shape (smile)
+        'i': (5, 55),   # 'ee' shape (smile)
+        'o': (4, 70),   # 'oh' shape (O shape)
+        'u': (4, 70),   # 'oh' shape (O shape)
+        'b': (0, 45),   # 'mm' shape (closed)
+        'm': (0, 50),   # 'mm' shape (closed)
+        'p': (0, 45),   # 'mm' shape (closed)
+        'f': (1, 45),   # 'ff' shape (slightly open)
+        'v': (1, 45),
+        's': (1, 45),   # 'ss' shape (slightly open)
+        'z': (1, 45),
+        'c': (1, 45),
+        'x': (1, 45),
+        'w': (4, 60),   # 'oo' shape (O shape)
+        'r': (4, 50),
+        'q': (4, 50),
+        'd': (1, 40),   # 'th' shape (slightly open)
+        't': (1, 40),
+        'n': (1, 45),
+        'l': (1, 45),
+        'g': (1, 40),
+        'k': (1, 40),
+        'j': (5, 50),
+        'y': (5, 50),
+        'h': (3, 50),
+        ' ': (0, 55),   # rest
+        ',': (0, 120),
+        '.': (0, 200),  # boundaries
+        '!': (0, 200),
+        '?': (0, 200),
     }
-    v, dur = mapping.get(ch, (1, 60))
+    v, dur = mapping.get(ch, (1, 45))
     is_boundary = ch in ('.', '!', '?')
     return (v, dur, is_boundary)
 
