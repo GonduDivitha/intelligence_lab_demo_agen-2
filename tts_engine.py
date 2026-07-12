@@ -103,7 +103,6 @@ class TTSEngine(QThread):
             self._interrupted.clear()
 
             self.speech_started.emit(token)
-            self.speaking_state_changed.emit(True)
 
             success = self._generate_and_play(text, language, token)
 
@@ -151,6 +150,8 @@ class TTSEngine(QThread):
                 
                 # Play using pygame
                 pygame.mixer.music.load(audio_path)
+                
+                self.speaking_state_changed.emit(True)
                 pygame.mixer.music.play()
                 
                 while pygame.mixer.music.get_busy():
@@ -183,6 +184,7 @@ class TTSEngine(QThread):
             
             # Since pyttsx3 runAndWait block, interruption is hard to detect mid-sentence.
             # However, for a fallback it's acceptable.
+            self.speaking_state_changed.emit(True)
             engine.say(text)
             engine.runAndWait()
             return True
